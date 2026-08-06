@@ -40,7 +40,8 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
   title: 'Occurrence Facet Aggregation',
   description:
     'Aggregate occurrence counts across a dimension (COUNTRY, STATE_PROVINCE, YEAR, BASIS_OF_RECORD, DATASET_KEY, ' +
-    'KINGDOM_KEY, etc.). Returns the top-N facet values ranked by count — no record payloads returned. ' +
+    'KINGDOM_KEY, etc.). Returns one page of facet values ranked by count descending — the top ' +
+    'facetLimit at facetOffset 0, a later slice of the same ranking past that. No record payloads returned. ' +
     'Core tool for distribution analysis and trend queries: "which countries have the most records ' +
     'for this species?", "how has observation volume changed since 2010?". ' +
     'Scope the aggregation with taxonKey, country, year, geometry, basisOfRecord, or datasetKey filters.',
@@ -107,7 +108,9 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
           })
           .describe('A facet value with its occurrence count.'),
       )
-      .describe('Facet values ranked by count descending (top facetLimit entries).'),
+      .describe(
+        'Facet values ranked by count descending — one page of up to facetLimit entries starting at facetOffset, not necessarily the top ones.',
+      ),
   }),
 
   // Agent-facing context — reaches both structuredContent and content[].
@@ -185,10 +188,18 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
   },
 
   format: (result) => {
+    /**
+     * The values rendered here are the top `facetLimit` only when `facetOffset` is 0 —
+     * past that they are a later slice of the same ranking. `format()` receives `output`
+     * alone, so the offset is not in scope; the header states what it can vouch for and
+     * the facetOffset enrichment field below it fixes the page's position in the ranking.
+     */
     const lines: string[] = [
       `## ${result.facet} Facet`,
       `**Total occurrences in scope:** ${result.totalOccurrences}`,
-      `**Top ${result.counts.length} values:**`,
+      result.counts.length === 0
+        ? '**No facet values in this page.**'
+        : `**Facet values in this page, ranked by count (${result.counts.length}, starting at facetOffset):**`,
     ];
     const total = result.totalOccurrences || 1;
     for (const entry of result.counts) {

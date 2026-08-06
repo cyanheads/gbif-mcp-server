@@ -27,11 +27,17 @@ export type TaxonomicStatus =
   | 'MISAPPLIED'
   | 'PROPARTE_SYNONYM';
 
-export type MatchType = 'EXACT' | 'FUZZY' | 'HIGHERORDER' | 'NONE';
+export type MatchType = 'EXACT' | 'FUZZY' | 'HIGHERRANK' | 'NONE';
 
 /** Raw response from /species/match */
 export type RawSpeciesMatch = {
   usageKey?: number;
+  /**
+   * Backbone key of the accepted taxon, present only when `status` is a synonym
+   * form. The endpoint carries no accompanying accepted-name string — the key is
+   * the whole of what it says about the accepted taxon.
+   */
+  acceptedUsageKey?: number;
   scientificName?: string;
   canonicalName?: string;
   rank?: string;

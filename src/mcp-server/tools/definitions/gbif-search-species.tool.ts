@@ -170,7 +170,10 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
   format: (result) => {
     const lines: string[] = [`**Results:** ${result.taxa.length}`];
     for (const t of result.taxa) {
-      const name = t.canonicalName ?? 'Unknown';
+      // GBIF leaves canonicalName null on backbone entries whose names are not parseable
+      // binomials; fall through to scientificName rather than printing Unknown over a
+      // name the record does carry. Same three-step fallback as the occurrence tools.
+      const name = t.canonicalName ?? t.scientificName ?? 'Unknown';
       const sci = t.scientificName && t.scientificName !== name ? ` [${t.scientificName}]` : '';
       lines.push(`\n## ${name}${sci}`);
       if (t.key != null) lines.push(`**Taxon key:** ${t.key}`);

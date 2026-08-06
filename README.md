@@ -52,7 +52,7 @@ Match a scientific or common name against the GBIF backbone taxonomy.
 - Confidence score 0–100; below 80 warrants review
 - Full classification hierarchy with keys at each rank: kingdom, phylum, class, order, family, genus, species
 - `matchType NONE` indicates no usable match — try removing strict mode or broadening the name
-- Resolves synonyms: always returns the accepted backbone key regardless of which name form was queried
+- Resolves synonyms: always returns the accepted backbone key regardless of which name form was queried; `matchedTaxonKey` carries the synonym's own key when the two differ
 
 ---
 
@@ -62,7 +62,8 @@ Match up to 50 scientific names against the GBIF backbone taxonomy in a single c
 
 - The batch counterpart to `gbif_match_species` — built for checklist, inventory, and species-list workflows that would otherwise need one round trip per name
 - Returns one result per input name, in input order; each carries `taxonKey`, `matchType`, and confidence
-- Per-name isolation: an unmatched name yields `matchType NONE` and a per-name lookup failure yields `matchType ERROR` — neither sinks the rest of the batch
+- Per-name isolation: an unmatched name yields `matchType NONE` and a per-name lookup failure yields `matchType ERROR` with the message and, when the failure was classified, a `reason` — neither sinks the rest of the batch
+- Same synonym resolution as `gbif_match_species`: `taxonKey` is the accepted taxon, `matchedTaxonKey` the synonym it was queried under
 - `strict: true` requires an exact match for every name; common names are not supported (use `gbif_search_species`)
 
 ---
@@ -154,7 +155,7 @@ Aggregate occurrence counts across a dimension.
 
 - Facets: `COUNTRY`, `YEAR`, `BASIS_OF_RECORD`, `DATASET_KEY`, `KINGDOM_KEY`, `PHYLUM_KEY`, `CLASS_KEY`, `ORDER_KEY`, `FAMILY_KEY`, `GENUS_KEY`, `SPECIES_KEY`, `PUBLISHING_COUNTRY`, `MONTH`
 - Scope with `taxonKey`, `country`, `year`, `geometry`, or `basisOfRecord` filters
-- Returns top-N values ranked by count (up to `facetLimit`, max 100) — no record payloads
+- Returns one page of values ranked by count descending — up to `facetLimit` (max 100), the top ones only while `facetOffset` is 0 — with no record payloads
 - Page past the first `facetLimit` with `facetOffset` (advance by `facetLimit` per page) to walk high-cardinality facets like `DATASET_KEY`; enrichment echoes the applied `facetOffset` and sets `moreValuesLikely` when a full page suggests more values remain
 - Core tool for distribution analysis ("which countries have the most records?") and trend queries ("how has observation volume changed since 2010?")
 

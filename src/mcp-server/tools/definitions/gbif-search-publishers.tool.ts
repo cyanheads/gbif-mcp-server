@@ -4,6 +4,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 
 /** Empty-result and pagination-overshoot guidance. */
@@ -74,6 +75,16 @@ export const gbifSearchPublishers = tool('gbif_search_publishers', {
         'Guidance when results are empty or paging overshot. Absent on successful result pages.',
       ),
   },
+
+  errors: [
+    {
+      reason: 'invalid_filter',
+      code: JsonRpcErrorCode.InvalidParams,
+      when: 'GBIF could not parse the country value as a country.',
+      recovery:
+        'Supply country as an ISO 3166-1 alpha-2 code such as US, GB, or SE — a country name is not accepted — or omit it to search every country.',
+    },
+  ],
 
   async handler(input, ctx) {
     ctx.log.info('Searching publishers', { q: input.q, country: input.country });

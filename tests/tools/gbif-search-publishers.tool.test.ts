@@ -153,4 +153,29 @@ describe('gbifSearchPublishers', () => {
     expect(text).toContain('Cornell Lab of Ornithology');
     expect(text).toContain('US');
   });
+
+  /**
+   * #47 — a country value GBIF cannot parse comes back as a 400 ("Cannot parse ZZZZ
+   * into a known Country"), which this tool declared no contract entry for.
+   */
+  it('propagates the upstream invalid_filter reason and declares it (issue #47)', async () => {
+    const { McpError, JsonRpcErrorCode } = await import('@cyanheads/mcp-ts-core/errors');
+    mockSearchPublishers.mockRejectedValue(
+      new McpError(
+        JsonRpcErrorCode.InvalidParams,
+        'GBIF API returned HTTP 400 Bad Request. Cannot parse ZZZZ into a known Country',
+        { status: 400, reason: 'invalid_filter' },
+      ),
+    );
+
+    const ctx = createMockContext({ errors: gbifSearchPublishers.errors });
+    const input = gbifSearchPublishers.input.parse({ country: 'ZZZZ' });
+
+    const err = await gbifSearchPublishers.handler(input, ctx).catch((e: unknown) => e);
+    expect(err).toMatchObject({ data: { reason: 'invalid_filter' } });
+
+    const declared = gbifSearchPublishers.errors?.find((e) => e.reason === 'invalid_filter');
+    expect(declared?.code).toBe(JsonRpcErrorCode.InvalidParams);
+    expect(declared?.recovery).toBeTruthy();
+  });
 });

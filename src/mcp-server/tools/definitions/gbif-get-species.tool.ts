@@ -80,6 +80,13 @@ export const gbifGetSpecies = tool('gbif_get_species', {
       recovery:
         'Use gbif_match_species to resolve a name to a valid backbone key, or gbif_search_species to browse.',
     },
+    {
+      reason: 'invalid_filter',
+      code: JsonRpcErrorCode.InvalidParams,
+      when: 'GBIF rejected the taxonKey as unparseable — a fraction, or a value outside the 32-bit signed integer range.',
+      recovery:
+        'Backbone taxon keys are whole numbers; take one from gbif_match_species or gbif_search_species rather than constructing it.',
+    },
   ],
 
   async handler(input, ctx) {

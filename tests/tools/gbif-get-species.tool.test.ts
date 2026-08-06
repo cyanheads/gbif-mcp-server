@@ -246,4 +246,30 @@ describe('gbifGetSpecies', () => {
       expect(text).toContain(part);
     }
   });
+
+  /**
+   * #47 — GBIF answers 400 (not 404) for a taxonKey it cannot parse: live,
+   * /species/999999999999 and /species/1.5 both return "For input string" with a 400,
+   * and the bare z.number() accepts either value.
+   */
+  it('propagates the upstream invalid_filter reason and declares it (issue #47)', async () => {
+    const { McpError, JsonRpcErrorCode } = await import('@cyanheads/mcp-ts-core/errors');
+    mockGetSpecies.mockRejectedValue(
+      new McpError(
+        JsonRpcErrorCode.InvalidParams,
+        'GBIF API returned HTTP 400 Bad Request. For input string: "999999999999"',
+        { status: 400, reason: 'invalid_filter' },
+      ),
+    );
+
+    const ctx = createMockContext({ errors: gbifGetSpecies.errors });
+    const input = gbifGetSpecies.input.parse({ taxonKey: 999999999999 });
+
+    const err = await gbifGetSpecies.handler(input, ctx).catch((e: unknown) => e);
+    expect(err).toMatchObject({ data: { reason: 'invalid_filter' } });
+
+    const declared = gbifGetSpecies.errors?.find((e) => e.reason === 'invalid_filter');
+    expect(declared?.code).toBe(JsonRpcErrorCode.InvalidParams);
+    expect(declared?.recovery).toBeTruthy();
+  });
 });

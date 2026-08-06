@@ -120,6 +120,75 @@ describe('gbifBulkMatchSpecies', () => {
     expect(result.results[1].taxonKey).toBeUndefined();
   });
 
+  /** #35 — same resolution as gbif_match_species, applied per entry. */
+  it('resolves a synonym entry to the accepted key and keeps the matched key', async () => {
+    mockMatchSpecies.mockResolvedValue({
+      matchType: 'EXACT',
+      usageKey: 7630906,
+      acceptedUsageKey: 5219404,
+      scientificName: 'Felis leo Linnaeus, 1758',
+      canonicalName: 'Felis leo',
+      rank: 'SPECIES',
+      status: 'SYNONYM',
+      confidence: 98,
+    });
+
+    const ctx = createMockContext();
+    const input = gbifBulkMatchSpecies.input.parse({ names: ['Felis leo'] });
+    const result = await gbifBulkMatchSpecies.handler(input, ctx);
+
+    expect(result.results[0].taxonKey).toBe(5219404);
+    expect(result.results[0].matchedTaxonKey).toBe(7630906);
+    expect(result.results[0].status).toBe('SYNONYM');
+  });
+
+  it('omits matchedTaxonKey on an accepted entry', async () => {
+    const ctx = createMockContext();
+    const input = gbifBulkMatchSpecies.input.parse({ names: ['Panthera leo'] });
+    const result = await gbifBulkMatchSpecies.handler(input, ctx);
+
+    expect(result.results[0].taxonKey).toBe(5219404);
+    expect(result.results[0].matchedTaxonKey).toBeUndefined();
+  });
+
+  /**
+   * #47 — the per-name catch is the only place a classified failure can surface for
+   * this tool, so it must carry the thrown reason rather than flattening to a message.
+   */
+  it('carries the thrown reason onto the ERROR entry', async () => {
+    const { McpError, JsonRpcErrorCode } = await import('@cyanheads/mcp-ts-core/errors');
+    mockMatchSpecies.mockImplementation(async (params: { name: string }) => {
+      if (params.name === 'boom') {
+        throw new McpError(
+          JsonRpcErrorCode.InvalidParams,
+          'GBIF API returned HTTP 400 Bad Request. Cannot parse ZZ into a known Rank',
+          { status: 400, reason: 'invalid_filter' },
+        );
+      }
+      return MATCHES['Panthera leo'];
+    });
+
+    const ctx = createMockContext();
+    const input = gbifBulkMatchSpecies.input.parse({ names: ['Panthera leo', 'boom'] });
+    const result = await gbifBulkMatchSpecies.handler(input, ctx);
+
+    expect(result.results[1].matchType).toBe('ERROR');
+    expect(result.results[1].reason).toBe('invalid_filter');
+    expect(result.results[0].matchType).toBe('EXACT');
+  });
+
+  it('leaves reason absent when the failure carried no classification', async () => {
+    mockMatchSpecies.mockRejectedValue(new Error('socket hang up'));
+
+    const ctx = createMockContext();
+    const input = gbifBulkMatchSpecies.input.parse({ names: ['Panthera leo'] });
+    const result = await gbifBulkMatchSpecies.handler(input, ctx);
+
+    expect(result.results[0].matchType).toBe('ERROR');
+    expect(result.results[0].error).toContain('socket hang up');
+    expect(result.results[0].reason).toBeUndefined();
+  });
+
   it('honors the strict flag', async () => {
     const ctx = createMockContext();
     const input = gbifBulkMatchSpecies.input.parse({ names: ['Panthera leo'], strict: true });
@@ -190,8 +259,21 @@ describe('gbifBulkMatchSpecies', () => {
           confidence: 99,
           matchType: 'EXACT',
         },
+        {
+          name: 'Felis leo',
+          taxonKey: 5219404,
+          matchedTaxonKey: 7630906,
+          canonicalName: 'Felis leo',
+          status: 'SYNONYM',
+          matchType: 'EXACT',
+        },
         { name: 'Zzxqq notaspecies', matchType: 'NONE' },
-        { name: 'boom', matchType: 'ERROR', error: 'GBIF API unavailable' },
+        {
+          name: 'boom',
+          matchType: 'ERROR',
+          error: 'GBIF API unavailable',
+          reason: 'invalid_filter',
+        },
       ],
     });
 
@@ -203,6 +285,9 @@ describe('gbifBulkMatchSpecies', () => {
     expect(text).toContain('NONE');
     expect(text).toContain('ERROR');
     expect(text).toContain('GBIF API unavailable');
+    // The resolved-synonym key and the failure classification reach content[] too.
+    expect(text).toContain('7630906');
+    expect(text).toContain('invalid_filter');
     expect(text).not.toContain('undefined');
     expect(text).not.toContain('null');
   });

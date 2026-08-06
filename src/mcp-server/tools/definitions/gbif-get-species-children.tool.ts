@@ -88,6 +88,13 @@ export const gbifGetSpeciesChildren = tool('gbif_get_species_children', {
       when: 'The taxonKey does not exist in the GBIF backbone.',
       recovery: 'Use gbif_match_species to resolve a name to a valid backbone taxon key.',
     },
+    {
+      reason: 'invalid_filter',
+      code: JsonRpcErrorCode.InvalidParams,
+      when: 'GBIF rejected the taxonKey as unparseable — a fraction, or a value outside the 32-bit signed integer range.',
+      recovery:
+        'Backbone taxon keys are whole numbers; take one from gbif_match_species or gbif_search_species rather than constructing it.',
+    },
   ],
 
   async handler(input, ctx) {
@@ -132,8 +139,17 @@ export const gbifGetSpeciesChildren = tool('gbif_get_species_children', {
 
     ctx.enrich({ offset, limit, endOfRecords });
     // No upstream total exists for this endpoint (issue #3); disclose page truncation from
-    // the authoritative endOfRecords flag instead of fabricating a count.
-    if (!endOfRecords) ctx.enrich.truncated({ shown: children.length, cap: limit });
+    // the authoritative endOfRecords flag instead of fabricating a count. The guidance
+    // string replaces the framework default, which tells the caller to narrow with filters
+    // — /species/{key}/children accepts none (it ignores a rank parameter outright), so
+    // paging is the only continuation there is.
+    if (!endOfRecords) {
+      ctx.enrich.truncated({
+        shown: children.length,
+        cap: limit,
+        guidance: `Showing ${children.length} children at offset ${offset}; more remain. Re-call with offset ${offset + children.length} for the next page, or raise limit (max 1000) to take a bigger page. This tool has no filters to narrow with.`,
+      });
+    }
     const notice = buildNotice({ childCount: children.length, endOfRecords });
     if (notice) ctx.enrich.notice(notice);
 
@@ -143,7 +159,10 @@ export const gbifGetSpeciesChildren = tool('gbif_get_species_children', {
   format: (result) => {
     const lines: string[] = [`**Results:** ${result.children.length}`];
     for (const child of result.children) {
-      const name = child.canonicalName ?? 'Unknown';
+      // GBIF leaves canonicalName null on backbone entries whose names are not parseable
+      // binomials; fall through to scientificName rather than printing Unknown over a
+      // name the record does carry. Same three-step fallback as the occurrence tools.
+      const name = child.canonicalName ?? child.scientificName ?? 'Unknown';
       const sci =
         child.scientificName && child.scientificName !== name ? ` [${child.scientificName}]` : '';
       lines.push(`\n- **${name}**${sci}`);

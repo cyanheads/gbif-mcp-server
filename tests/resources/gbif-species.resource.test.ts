@@ -191,4 +191,28 @@ describe('gbifSpeciesResource', () => {
 
     expect(mockGetSpecies).toHaveBeenCalledWith(5231190, ctx);
   });
+
+  /**
+   * #47 — parseInt lets a key past the 32-bit signed range through to GBIF, which
+   * answers 400 rather than the 404 the not_found contract covers.
+   */
+  it('propagates the upstream invalid_filter reason and declares it (issue #47)', async () => {
+    mockGetSpecies.mockRejectedValue(
+      new McpError(
+        JsonRpcErrorCode.InvalidParams,
+        'GBIF API returned HTTP 400 Bad Request. For input string: "999999999999"',
+        { status: 400, reason: 'invalid_filter' },
+      ),
+    );
+
+    const ctx = createMockContext({ tenantId: 'test-tenant', errors: gbifSpeciesResource.errors });
+    const params = gbifSpeciesResource.params.parse({ taxonKey: '999999999999' });
+
+    const err = await gbifSpeciesResource.handler(params, ctx).catch((e: unknown) => e);
+    expect(err).toMatchObject({ data: { reason: 'invalid_filter' } });
+
+    const declared = gbifSpeciesResource.errors?.find((e) => e.reason === 'invalid_filter');
+    expect(declared?.code).toBe(JsonRpcErrorCode.InvalidParams);
+    expect(declared?.recovery).toBeTruthy();
+  });
 });

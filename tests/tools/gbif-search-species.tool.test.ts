@@ -196,4 +196,26 @@ describe('gbifSearchSpecies', () => {
     expect(text).toContain('Parus major');
     expect(text).toContain('Great Tit');
   });
+
+  /**
+   * #39 — GBIF leaves canonicalName null on backbone entries whose names are not
+   * parseable binomials (live: q=Coleoptera&rank=FAMILY returns key 220425367 with
+   * scientificName "unclassified Coleoptera" and canonicalName null).
+   */
+  it('falls back to scientificName instead of printing Unknown (issue #39)', () => {
+    const blocks = gbifSearchSpecies.format!({
+      taxa: [{ key: 220425367, scientificName: 'unclassified Coleoptera', rank: 'FAMILY' }],
+    });
+    const text = blocks[0].type === 'text' ? blocks[0].text : '';
+
+    expect(text).toContain('unclassified Coleoptera');
+    expect(text).not.toContain('Unknown');
+  });
+
+  it('still prints Unknown when GBIF supplies no name at all', () => {
+    const blocks = gbifSearchSpecies.format!({ taxa: [{ key: 999 }] });
+    const text = blocks[0].type === 'text' ? blocks[0].text : '';
+
+    expect(text).toContain('Unknown');
+  });
 });

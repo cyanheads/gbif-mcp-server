@@ -106,6 +106,57 @@ describe('gbifGetSpeciesChildren', () => {
     expect(enrichment.cap).toBe(3);
   });
 
+  /**
+   * #46 — the framework's default truncation notice tells the caller to narrow with
+   * filters. /species/{key}/children takes none (it ignores a rank parameter outright),
+   * so the guidance must name the offset to advance to instead.
+   */
+  it('names offset paging in the truncation notice, not filters (issue #46)', async () => {
+    mockGetSpeciesChildren.mockResolvedValue({
+      results: [
+        { key: 1, canonicalName: 'A' },
+        { key: 2, canonicalName: 'B' },
+      ],
+      offset: 4,
+      limit: 2,
+      endOfRecords: false,
+    });
+
+    const ctx = createMockContext({ errors: gbifGetSpeciesChildren.errors });
+    const input = gbifGetSpeciesChildren.input.parse({ taxonKey: 2435194, limit: 2, offset: 4 });
+    await gbifGetSpeciesChildren.handler(input, ctx);
+
+    const notice = getEnrichment(ctx).notice as string;
+    expect(notice).toContain('offset 6');
+    expect(notice).toContain('limit');
+    expect(notice).not.toMatch(/narrow with filters/i);
+  });
+
+  /**
+   * #47 — GBIF answers 400 (not 404) for a taxonKey it cannot parse, e.g. a fraction
+   * or a value past the 32-bit signed range, both of which the bare z.number() accepts.
+   */
+  it('propagates the upstream invalid_filter reason and declares it (issue #47)', async () => {
+    const { McpError, JsonRpcErrorCode } = await import('@cyanheads/mcp-ts-core/errors');
+    mockGetSpeciesChildren.mockRejectedValue(
+      new McpError(
+        JsonRpcErrorCode.InvalidParams,
+        'GBIF API returned HTTP 400 Bad Request. For input string: "1.5"',
+        { status: 400, reason: 'invalid_filter' },
+      ),
+    );
+
+    const ctx = createMockContext({ errors: gbifGetSpeciesChildren.errors });
+    const input = gbifGetSpeciesChildren.input.parse({ taxonKey: 1.5 });
+
+    const err = await gbifGetSpeciesChildren.handler(input, ctx).catch((e: unknown) => e);
+    expect(err).toMatchObject({ data: { reason: 'invalid_filter' } });
+
+    const declared = gbifGetSpeciesChildren.errors?.find((e) => e.reason === 'invalid_filter');
+    expect(declared?.code).toBe(JsonRpcErrorCode.InvalidParams);
+    expect(declared?.recovery).toBeTruthy();
+  });
+
   it('enriches with notice when valid taxon has no children', async () => {
     mockGetSpeciesChildren.mockResolvedValue({
       results: [],
@@ -206,5 +257,27 @@ describe('gbifGetSpeciesChildren', () => {
     const text = blocks[0].type === 'text' ? blocks[0].text : '';
     expect(text).toContain('5231190');
     expect(text).toContain('Parus major');
+  });
+
+  /**
+   * #39 — GBIF leaves canonicalName null on backbone entries whose names are not
+   * parseable binomials (live: child 216995197 of "unclassified Coleoptera" has
+   * scientificName "coleopteraJanzen01" and canonicalName null).
+   */
+  it('falls back to scientificName instead of printing Unknown (issue #39)', () => {
+    const blocks = gbifGetSpeciesChildren.format!({
+      children: [{ key: 216995197, scientificName: 'coleopteraJanzen01', rank: 'UNRANKED' }],
+    });
+    const text = blocks[0].type === 'text' ? blocks[0].text : '';
+
+    expect(text).toContain('coleopteraJanzen01');
+    expect(text).not.toContain('Unknown');
+  });
+
+  it('still prints Unknown when GBIF supplies no name at all', () => {
+    const blocks = gbifGetSpeciesChildren.format!({ children: [{ key: 999 }] });
+    const text = blocks[0].type === 'text' ? blocks[0].text : '';
+
+    expect(text).toContain('Unknown');
   });
 });

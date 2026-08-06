@@ -11,6 +11,7 @@ import type { StorageService } from '@cyanheads/mcp-ts-core/storage';
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { gbifGetDataset } from '@/mcp-server/tools/definitions/gbif-get-dataset.tool.js';
+import { gbifGetSpecies } from '@/mcp-server/tools/definitions/gbif-get-species.tool.js';
 import { GbifService } from '@/services/gbif/gbif-service.js';
 
 const REPOSITORY_URL = 'https://github.com/cyanheads/gbif-biodiversity-mcp-server';
@@ -171,6 +172,28 @@ describe('GbifService upstream error payload', () => {
 
     expect(data.recovery?.hint).toBe(
       gbifGetDataset.errors?.find((e) => e.reason === 'invalid_filter')?.recovery,
+    );
+  });
+
+  /**
+   * #47 — the taxon-key tools reach the same 400 path (live: /species/999999999999
+   * answers 400 "For input string"). Declaring the reason is what lets their own
+   * wording replace the service fallback, so assert the wording actually swaps.
+   */
+  it("uses a taxon-key tool's own invalid_filter wording once it declares one", async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(upstream(400, 'For input string: "999999999999"', 'Bad Request')),
+    );
+    const ctx = createMockContext({ errors: gbifGetSpecies.errors });
+    const err = (await makeService()
+      .getSpecies(999999999999, ctx)
+      .catch((e: unknown) => e)) as McpError;
+    const data = err.data as { reason?: string; recovery?: { hint?: string } };
+
+    expect(data.reason).toBe('invalid_filter');
+    expect(data.recovery?.hint).toBe(
+      gbifGetSpecies.errors?.find((e) => e.reason === 'invalid_filter')?.recovery,
     );
   });
 

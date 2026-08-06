@@ -46,6 +46,13 @@ export const gbifSpeciesResource = resource('gbif://species/{taxonKey}', {
       recovery:
         'Use gbif_match_species to resolve a name to a valid backbone key, or gbif_search_species to browse.',
     },
+    {
+      reason: 'invalid_filter',
+      code: JsonRpcErrorCode.InvalidParams,
+      when: 'GBIF rejected the taxonKey segment as unparseable — a value outside the 32-bit signed integer range.',
+      recovery:
+        'Address the resource with a whole backbone taxon key as gbif_match_species or gbif_search_species returns it, rather than a constructed number.',
+    },
   ],
 
   async handler(params, ctx) {

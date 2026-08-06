@@ -145,6 +145,31 @@ describe('gbifOccurrenceFacets', () => {
     const text = blocks[0].type === 'text' ? blocks[0].text : '';
     expect(text).toContain('YEAR');
     expect(text).toContain('0');
+    // #39: "Top 0 values" read as a defect rather than an empty result.
+    expect(text).not.toMatch(/Top 0/i);
+    expect(text).toMatch(/No facet values/i);
+  });
+
+  /**
+   * #39 — the rendered values are the top facetLimit only at facetOffset 0. Live check:
+   * COUNTRY on taxonKey 5219404 unpaged gives ZA, KE, TZ, BW, NA, BJ; facetOffset=3 with
+   * facetLimit=3 returns BW, NA, BJ — ranks 4-6, which "Top 3 values" misdescribes.
+   */
+  it('does not claim the rendered values are the top N (issue #39)', () => {
+    const blocks = gbifOccurrenceFacets.format!({
+      facet: 'COUNTRY',
+      totalOccurrences: 19078,
+      counts: [
+        { name: 'BW', count: 1401 },
+        { name: 'NA', count: 861 },
+        { name: 'BJ', count: 682 },
+      ],
+    });
+    const text = blocks[0].type === 'text' ? blocks[0].text : '';
+
+    expect(text).not.toMatch(/Top 3 values/i);
+    expect(text).toMatch(/facetOffset/i);
+    expect(text).toContain('BW');
   });
 
   // #10: percentages use totalOccurrences, not maxCount, and label is "% of total"

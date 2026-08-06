@@ -14,7 +14,7 @@
 | `gbif_search_occurrences` | Search GBIF occurrence records. Primary workflow tool for location + taxon queries. Accepts taxon key (from `gbif_match_species`), country, bounding box, date range, basis of record, and other Darwin Core filters. Returns paginated occurrence records with coordinates, date, dataset, and collector. | `taxonKey`, `scientificName`, `country`, `decimalLatitude`, `decimalLongitude`, `geometry`, `year`, `month`, `basisOfRecord`, `hasCoordinate`, `limit`, `offset` | `readOnlyHint: true` |
 | `gbif_count_occurrences` | Count occurrences matching a taxon + location filter without fetching records. Use for quick totals ("how many Aves records in Sweden?") or before deciding whether to paginate a full search. | `taxonKey`, `country`, `isGeoreferenced` | `readOnlyHint: true` |
 | `gbif_get_occurrence` | Fetch a single occurrence record by GBIF occurrence key — full Darwin Core fields, coordinates, date, collector, media, dataset provenance. | `occurrenceKey` | `readOnlyHint: true` |
-| `gbif_occurrence_facets` | Aggregate occurrence counts across a dimension (country, year, basis of record, dataset, kingdom). Returns the top-N facet values for a given filter. Core tool for distribution analysis and trend queries ("which countries have the most records for this species?", "how has observation volume changed since 2010?"). | `taxonKey`, `country`, `geometry`, `facet`, `facetLimit`, `year`, `basisOfRecord` | `readOnlyHint: true` |
+| `gbif_occurrence_facets` | Aggregate occurrence counts across a dimension (country, year, basis of record, dataset, kingdom). Returns one page of facet values ranked by count for a given filter — `facetLimit` entries starting at `facetOffset`. Core tool for distribution analysis and trend queries ("which countries have the most records for this species?", "how has observation volume changed since 2010?"). | `taxonKey`, `country`, `geometry`, `facet`, `facetLimit`, `year`, `basisOfRecord` | `readOnlyHint: true` |
 | `gbif_search_datasets` | Search GBIF datasets by keyword, type, country, or publishing organization. Returns dataset title, description, license, record count, and DOI. | `q`, `type`, `publishingCountry`, `hostingOrg`, `limit`, `offset` | `readOnlyHint: true` |
 | `gbif_get_dataset` | Fetch a dataset record by key — full metadata including title, description, citation, contacts, license, temporal/geographic coverage, and record count. | `datasetKey`, `contactLimit` | `readOnlyHint: true` |
 | `gbif_search_publishers` | Search organizations (publishers/institutions) that contribute data to GBIF by name or country. Returns organization name, country, and key for chaining into dataset and occurrence queries. | `q`, `country`, `limit`, `offset` | `readOnlyHint: true` |
@@ -136,12 +136,14 @@ z.object({
 
 **Output:**
 
-- `usageKey` (number | null) — the raw field from the API; handler should alias this as `taxonKey` for consistency with downstream tools. Null when no match.
+- `usageKey` (number | null) — the raw field from the API: the key of the name that matched, which for a synonym is the synonym's own key. Null when no match.
+- `acceptedUsageKey` (number) — present only on a synonym match. The endpoint carries no accepted-*name* string, so this key is everything it says about the accepted taxon; a name requires a follow-up `gbif_get_species` call.
+- The handler emits `taxonKey` = `acceptedUsageKey ?? usageKey`, plus `matchedTaxonKey` = `usageKey` when the two differ, so the key handed downstream is always the one the occurrence tools should filter on.
 - `scientificName` — full name with authority
 - `canonicalName` — name without authority
 - `rank`, `status` (ACCEPTED | SYNONYM | DOUBTFUL)
 - `confidence` (0–100) — GBIF's match confidence; below 80 warrants user review
-- `matchType` (EXACT | FUZZY | HIGHERORDER | NONE)
+- `matchType` (EXACT | FUZZY | HIGHERRANK | NONE)
 - Classification fields are returned **flat at the top level** (not nested): `kingdom`, `phylum`, `class`, `order`, `family`, `genus`, `species` and corresponding `kingdomKey`, `phylumKey`, `classKey`, `orderKey`, `familyKey`, `genusKey`, `speciesKey` fields. There is no nested `classification` object.
 - Note: `alternatives` is **not returned** by the `/species/match` endpoint — it is absent from real API responses regardless of match quality.
 
@@ -539,3 +541,6 @@ None. GBIF issues no API key, and the read endpoints this server calls take no c
 | 2026-05-23 | Two resources only (species + dataset) | These are the only stable reference objects with real utility as injectable context; occurrence records are too numerous and publishers too rarely needed |
 | 2026-05-23 | Pagination cap surfaced in `paginationNote` field | GBIF silently returns no more data past the cap; explicit warning prevents silent truncation in agent workflows |
 | 2026-05-23 | Both WKT geometry and lat/lon ranges exposed as occurrence search params | WKT supports complex polygons (watersheds, protected area boundaries); lat/lon ranges are simpler for rectangular queries — both have clear agent use cases |
+| 2026-08-06 | `gbif_match_species` / `gbif_bulk_match_species` return the **accepted** key as `taxonKey`, with the matched synonym key as `matchedTaxonKey` | The tool exists to hand the occurrence tools a key they can filter on; a synonym key returns only the records filed under that name (106 vs 18,961 for *Felis leo*) with nothing marking the gap. Surfacing the accepted key as a second field would have left the documented chain — "pass `taxonKey` to the occurrence tools" — still wrong by default |
+| 2026-08-06 | No secondary lookup to resolve the accepted taxon's *name* | `/species/match` reports the accepted taxon as a bare `acceptedUsageKey`, so a name costs one extra request per match — 50 for a full bulk batch. The key is what downstream tools need; the notice points at `gbif_get_species` for callers who want the name |
+| 2026-08-06 | `invalid_filter` declared on the taxon-key tools but **not** on the two match tools | `/species/match` answers HTTP 200 for every input those schemas can produce, so declaring the reason there would advertise a failure mode nothing can reach — the same defect as an undeclared one, inverted |

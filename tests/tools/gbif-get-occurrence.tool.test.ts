@@ -255,4 +255,29 @@ describe('gbifGetOccurrence', () => {
     const text = blocks[0].type === 'text' ? blocks[0].text : '';
     expect(text).toContain('Class key: 212');
   });
+
+  /**
+   * #47 — a fractional occurrenceKey passes the bare z.number() and GBIF answers 400
+   * ("For input string: \"1.5\""), unlike an out-of-range integer key, which 404s.
+   */
+  it('propagates the upstream invalid_filter reason and declares it (issue #47)', async () => {
+    const { McpError, JsonRpcErrorCode } = await import('@cyanheads/mcp-ts-core/errors');
+    mockGetOccurrence.mockRejectedValue(
+      new McpError(
+        JsonRpcErrorCode.InvalidParams,
+        'GBIF API returned HTTP 400 Bad Request. For input string: "1.5"',
+        { status: 400, reason: 'invalid_filter' },
+      ),
+    );
+
+    const ctx = createMockContext({ errors: gbifGetOccurrence.errors });
+    const input = gbifGetOccurrence.input.parse({ occurrenceKey: 1.5 });
+
+    const err = await gbifGetOccurrence.handler(input, ctx).catch((e: unknown) => e);
+    expect(err).toMatchObject({ data: { reason: 'invalid_filter' } });
+
+    const declared = gbifGetOccurrence.errors?.find((e) => e.reason === 'invalid_filter');
+    expect(declared?.code).toBe(JsonRpcErrorCode.InvalidParams);
+    expect(declared?.recovery).toBeTruthy();
+  });
 });

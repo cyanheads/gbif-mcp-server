@@ -4,6 +4,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 
 export const gbifBulkMatchSpecies = tool('gbif_bulk_match_species', {
@@ -14,9 +15,11 @@ export const gbifBulkMatchSpecies = tool('gbif_bulk_match_species', {
     'would otherwise need one round trip per name. Each name is matched independently and results ' +
     'are returned in input order, one entry per name. A name with no backbone match yields ' +
     'matchType NONE (no taxonKey) instead of failing the batch; a per-name lookup failure yields ' +
-    'matchType ERROR with the reason, leaving the rest of the batch intact. Resolves synonyms to ' +
-    'the accepted backbone key. Common names are not supported — use gbif_search_species for ' +
-    'vernacular searches. Below confidence 80, review the match.',
+    "matchType ERROR carrying that name's error message and, when the failure was classified, " +
+    'a machine-readable reason — the rest of the batch is unaffected, and the call as a whole ' +
+    'still succeeds. When a queried name is a synonym, taxonKey is the accepted taxon it resolves ' +
+    "to and matchedTaxonKey carries the synonym's own key. Common names are not supported — use " +
+    'gbif_search_species for vernacular searches. Below confidence 80, review the match.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     names: z
@@ -43,7 +46,13 @@ export const gbifBulkMatchSpecies = tool('gbif_bulk_match_species', {
               .number()
               .optional()
               .describe(
-                'Matched GBIF backbone taxon key — use in gbif_search_occurrences, gbif_count_occurrences, and gbif_occurrence_facets. Absent when matchType is NONE or ERROR.',
+                "GBIF backbone taxon key to pass to gbif_search_occurrences, gbif_count_occurrences, and gbif_occurrence_facets — the accepted taxon's key when this name is a synonym, otherwise the matched taxon's own key. Absent when matchType is NONE or ERROR.",
+              ),
+            matchedTaxonKey: z
+              .number()
+              .optional()
+              .describe(
+                'Backbone key of the name that actually matched. Present only when it differs from taxonKey — that is, when a synonym was resolved to its accepted taxon.',
               ),
             scientificName: z
               .string()
@@ -70,7 +79,13 @@ export const gbifBulkMatchSpecies = tool('gbif_bulk_match_species', {
             error: z
               .string()
               .optional()
-              .describe('Failure reason when matchType is ERROR. Absent otherwise.'),
+              .describe('Failure message when matchType is ERROR. Absent otherwise.'),
+            reason: z
+              .string()
+              .optional()
+              .describe(
+                'Machine-readable failure identifier when matchType is ERROR — e.g. invalid_filter when GBIF rejected a supplied value. Absent when the failure carried no classification, and absent on every non-ERROR entry.',
+              ),
           })
           .describe('Match outcome for one input name.'),
       )
@@ -95,9 +110,14 @@ export const gbifBulkMatchSpecies = tool('gbif_bulk_match_species', {
           if (raw.usageKey == null || raw.matchType == null || raw.matchType === 'NONE') {
             return { name, matchType: 'NONE' };
           }
+          // `/species/match` names the accepted taxon only as acceptedUsageKey; resolve
+          // so taxonKey is safe to hand to the occurrence tools (see gbif_match_species).
+          const matchedTaxonKey = raw.usageKey;
+          const taxonKey = raw.acceptedUsageKey ?? matchedTaxonKey;
           return {
             name,
-            taxonKey: raw.usageKey,
+            taxonKey,
+            ...(taxonKey !== matchedTaxonKey && { matchedTaxonKey }),
             scientificName: raw.scientificName ?? undefined,
             canonicalName: raw.canonicalName ?? undefined,
             rank: raw.rank ?? undefined,
@@ -106,10 +126,17 @@ export const gbifBulkMatchSpecies = tool('gbif_bulk_match_species', {
             matchType: raw.matchType,
           };
         } catch (err) {
+          // The per-name catch is the only place a classified failure can surface for this
+          // tool, so carry the thrown reason through rather than flattening to a message.
+          const reason =
+            err instanceof McpError && typeof err.data?.reason === 'string'
+              ? err.data.reason
+              : undefined;
           return {
             name,
             matchType: 'ERROR',
             error: err instanceof Error ? err.message : String(err),
+            ...(reason && { reason }),
           };
         }
       }),
@@ -125,11 +152,17 @@ export const gbifBulkMatchSpecies = tool('gbif_bulk_match_species', {
       if (r.canonicalName) lines.push(`**Canonical name:** ${r.canonicalName}`);
       if (r.scientificName) lines.push(`**Scientific name:** ${r.scientificName}`);
       if (r.taxonKey != null) lines.push(`**Taxon key:** ${r.taxonKey}`);
+      if (r.matchedTaxonKey != null) {
+        lines.push(
+          `**Matched taxon key:** ${r.matchedTaxonKey} — this name is a synonym; the taxon key above is the accepted taxon it resolves to.`,
+        );
+      }
       if (r.rank) lines.push(`**Rank:** ${r.rank}`);
       if (r.status) lines.push(`**Status:** ${r.status}`);
       lines.push(`**Match type:** ${r.matchType}`);
       if (r.confidence != null) lines.push(`**Confidence:** ${r.confidence}/100`);
       if (r.error) lines.push(`**Error:** ${r.error}`);
+      if (r.reason) lines.push(`**Reason:** ${r.reason}`);
     }
     return [{ type: 'text', text: lines.join('\n') }];
   },

@@ -3,7 +3,7 @@
  * @module tests/tools/gbif-get-species-classification.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gbifGetSpeciesClassification } from '@/mcp-server/tools/definitions/gbif-get-species-classification.tool.js';
 
@@ -113,7 +113,48 @@ describe('gbifGetSpeciesClassification', () => {
     const input = gbifGetSpeciesClassification.input.parse({ taxonKey: 1 });
     const result = await gbifGetSpeciesClassification.handler(input, ctx);
 
+    // #7 settled that an empty chain with isError false is the correct outcome here;
+    // #46 only adds the notice that says why it is empty (rather than missing).
     expect(result.classification).toHaveLength(0);
+    const notice = getEnrichment(ctx).notice as string;
+    expect(notice).toContain('root');
+    expect(notice).toContain('1');
+  });
+
+  it('emits no root notice when the chain has entries', async () => {
+    mockGetSpeciesParents.mockResolvedValue([
+      { key: 1, rank: 'KINGDOM', canonicalName: 'Animalia' },
+    ]);
+
+    const ctx = createMockContext({ errors: gbifGetSpeciesClassification.errors });
+    const input = gbifGetSpeciesClassification.input.parse({ taxonKey: 44 });
+    await gbifGetSpeciesClassification.handler(input, ctx);
+
+    expect(getEnrichment(ctx).notice).toBeUndefined();
+  });
+
+  /** #47 — GBIF answers 400 for a taxonKey it cannot parse, not 404. */
+  it('propagates the upstream invalid_filter reason and declares it (issue #47)', async () => {
+    const { McpError, JsonRpcErrorCode } = await import('@cyanheads/mcp-ts-core/errors');
+    mockGetSpeciesParents.mockRejectedValue(
+      new McpError(
+        JsonRpcErrorCode.InvalidParams,
+        'GBIF API returned HTTP 400 Bad Request. For input string: "1.5"',
+        { status: 400, reason: 'invalid_filter' },
+      ),
+    );
+
+    const ctx = createMockContext({ errors: gbifGetSpeciesClassification.errors });
+    const input = gbifGetSpeciesClassification.input.parse({ taxonKey: 1.5 });
+
+    const err = await gbifGetSpeciesClassification.handler(input, ctx).catch((e: unknown) => e);
+    expect(err).toMatchObject({ data: { reason: 'invalid_filter' } });
+
+    const declared = gbifGetSpeciesClassification.errors?.find(
+      (e) => e.reason === 'invalid_filter',
+    );
+    expect(declared?.code).toBe(JsonRpcErrorCode.InvalidParams);
+    expect(declared?.recovery).toBeTruthy();
   });
 
   it('normalizes canonicalName to name field', async () => {

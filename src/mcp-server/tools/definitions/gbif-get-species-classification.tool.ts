@@ -40,12 +40,29 @@ export const gbifGetSpeciesClassification = tool('gbif_get_species_classificatio
       ),
   }),
 
+  // Agent-facing context — reaches both structuredContent and content[].
+  enrichment: {
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        'Guidance when the chain is empty because the taxon sits at the root of the backbone. Absent when the chain has entries.',
+      ),
+  },
+
   errors: [
     {
       reason: 'not_found',
       code: JsonRpcErrorCode.NotFound,
       when: 'The taxonKey does not exist in the GBIF backbone.',
       recovery: 'Use gbif_match_species to resolve a name to a valid backbone taxon key.',
+    },
+    {
+      reason: 'invalid_filter',
+      code: JsonRpcErrorCode.InvalidParams,
+      when: 'GBIF rejected the taxonKey as unparseable — a fraction, or a value outside the 32-bit signed integer range.',
+      recovery:
+        'Backbone taxon keys are whole numbers; take one from gbif_match_species or gbif_search_species rather than constructing it.',
     },
   ],
 
@@ -85,6 +102,12 @@ export const gbifGetSpeciesClassification = tool('gbif_get_species_classificatio
         }
         throw err;
       }
+      // The existence check passed, so an empty chain is the correct answer for a root
+      // taxon (issue #7) — say so, rather than returning a bare [] that reads the same
+      // as a lookup that found nothing.
+      ctx.enrich.notice(
+        `Taxon ${input.taxonKey} sits at the root of the GBIF backbone and has no parent ranks, so the chain is empty rather than missing. Use gbif_get_species for its own record, or gbif_get_species_children to walk downward.`,
+      );
     }
 
     const classification = raw.map((node) => ({

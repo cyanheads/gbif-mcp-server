@@ -160,6 +160,13 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
       when: 'The occurrenceKey does not exist in GBIF.',
       recovery: 'Use gbif_search_occurrences to find valid occurrence keys.',
     },
+    {
+      reason: 'invalid_filter',
+      code: JsonRpcErrorCode.InvalidParams,
+      when: 'GBIF rejected the occurrenceKey as unparseable — a fraction, or a value past the largest integer the endpoint accepts.',
+      recovery:
+        'Occurrence keys are whole numbers; take one from the key field of a gbif_search_occurrences result rather than constructing it.',
+    },
   ],
 
   async handler(input, ctx) {

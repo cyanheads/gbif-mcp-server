@@ -12,9 +12,11 @@ export const gbifMatchSpecies = tool('gbif_match_species', {
   description:
     'Match a scientific name against the GBIF backbone taxonomy. ' +
     'Returns the best-matching taxon with full classification and a confidence score (0–100). ' +
-    'This is the mandatory first step for any GBIF workflow — it resolves synonyms and returns ' +
-    'the backbone taxonKey required by gbif_search_occurrences, gbif_count_occurrences, and ' +
-    'gbif_occurrence_facets. Below confidence 80, the match should be reviewed. ' +
+    'This is the mandatory first step for any GBIF workflow — it returns the backbone taxonKey ' +
+    'required by gbif_search_occurrences, gbif_count_occurrences, and gbif_occurrence_facets. ' +
+    'When the queried name is a synonym, taxonKey is the accepted taxon it resolves to and ' +
+    "matchedTaxonKey carries the synonym's own key; occurrence counts differ sharply between " +
+    'the two, so pass taxonKey. Below confidence 80, the match should be reviewed. ' +
     'matchType NONE means no usable match was found — try removing the strict flag or broadening the name.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
@@ -47,7 +49,13 @@ export const gbifMatchSpecies = tool('gbif_match_species', {
       .number()
       .optional()
       .describe(
-        'GBIF backbone taxon key. Use this in downstream tools. Absent when matchType is NONE.',
+        "GBIF backbone taxon key to pass to downstream tools. The accepted taxon's key when the queried name is a synonym, otherwise the matched taxon's own key.",
+      ),
+    matchedTaxonKey: z
+      .number()
+      .optional()
+      .describe(
+        'Backbone key of the name that actually matched. Present only when it differs from taxonKey — that is, when a synonym was resolved to its accepted taxon.',
       ),
     scientificName: z.string().optional().describe('Full scientific name with authorship.'),
     canonicalName: z.string().optional().describe('Scientific name without authorship.'),
@@ -77,6 +85,22 @@ export const gbifMatchSpecies = tool('gbif_match_species', {
     speciesKey: z.number().optional().describe('Backbone taxon key for the species.'),
   }),
 
+  // Agent-facing context — reaches both structuredContent and content[].
+  enrichment: {
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        'Guidance when the queried name was a synonym and taxonKey was resolved to the accepted taxon. Absent when the matched name is already the accepted one.',
+      ),
+  },
+
+  /**
+   * No `invalid_filter` entry: `/species/match` answers HTTP 200 for every input this
+   * schema can produce — a malformed kingdom, an out-of-enum rank, and an empty, very
+   * long, or control-character name all come back as a normal match or matchType NONE.
+   * Declaring a reason nothing can throw is the same defect as an undeclared one.
+   */
   errors: [
     {
       reason: 'no_match',
@@ -105,8 +129,25 @@ export const gbifMatchSpecies = tool('gbif_match_species', {
       });
     }
 
+    /**
+     * `/species/match` reports the accepted taxon as `acceptedUsageKey` and nothing
+     * else — no accepted-name string. Resolving here is what makes the returned
+     * taxonKey safe to hand straight to the occurrence tools: filtering on the
+     * synonym's own key returns only the records filed under that name.
+     */
+    const matchedTaxonKey = raw.usageKey;
+    const taxonKey = raw.acceptedUsageKey ?? matchedTaxonKey;
+    const resolvedSynonym = taxonKey !== matchedTaxonKey;
+
+    if (resolvedSynonym) {
+      ctx.enrich.notice(
+        `"${input.name}" matched a synonym (key ${matchedTaxonKey}, status ${raw.status ?? 'SYNONYM'}). taxonKey ${taxonKey} is the accepted taxon it resolves to — pass that to the occurrence tools; the synonym's key covers only records filed under that name. Call gbif_get_species with ${taxonKey} for the accepted name.`,
+      );
+    }
+
     return {
-      taxonKey: raw.usageKey,
+      taxonKey,
+      ...(resolvedSynonym && { matchedTaxonKey }),
       scientificName: raw.scientificName,
       canonicalName: raw.canonicalName,
       rank: raw.rank,
@@ -135,6 +176,11 @@ export const gbifMatchSpecies = tool('gbif_match_species', {
     if (result.canonicalName) lines.push(`## ${result.canonicalName}`);
     if (result.scientificName) lines.push(`**Scientific name:** ${result.scientificName}`);
     if (result.taxonKey != null) lines.push(`**Taxon key:** ${result.taxonKey}`);
+    if (result.matchedTaxonKey != null) {
+      lines.push(
+        `**Matched taxon key:** ${result.matchedTaxonKey} — the queried name is a synonym; the taxon key above is the accepted taxon it resolves to.`,
+      );
+    }
     if (result.rank) lines.push(`**Rank:** ${result.rank}`);
     if (result.status) lines.push(`**Status:** ${result.status}`);
     if (result.matchType) lines.push(`**Match type:** ${result.matchType}`);
