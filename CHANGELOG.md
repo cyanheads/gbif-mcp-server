@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.7.0](changelog/0.7.x/0.7.0.md) — 2026-08-06 · ⚠️ Breaking
+
+country on the three occurrence tools and publishingCountry on gbif_search_datasets now reject non-canonical forms instead of silently matching zero records; a whitespace-padded uppercase code, previously tolerated, now fails validation.
+
 ## [0.6.1](changelog/0.6.x/0.6.1.md) — 2026-08-06
 
 pagination_cap_exceeded guidance now names a real DATASET_KEY partition technique instead of an aggregate tool; publishingCountry and stateProvince are new filters on all three occurrence tools.
