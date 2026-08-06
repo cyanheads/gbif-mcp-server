@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.6.1](changelog/0.6.x/0.6.1.md) — 2026-08-06
+
+pagination_cap_exceeded guidance now names a real DATASET_KEY partition technique instead of an aggregate tool; publishingCountry and stateProvince are new filters on all three occurrence tools.
+
 ## [0.6.0](changelog/0.6.x/0.6.0.md) — 2026-08-06 · ⚠️ Breaking
 
 Occurrence tools now default occurrenceStatus to PRESENT, excluding absence records that previously counted as sightings; occurrenceStatus and iucnRedListCategory are new fields and filters; taxonomicStatus, eventTime, and GADM level3 are surfaced; dataset recordCount now states its wider scope.
