@@ -281,3 +281,135 @@ describe('gbifGetOccurrence', () => {
     expect(declared?.recovery).toBeTruthy();
   });
 });
+
+/**
+ * #36/#37/#44 — four fields GBIF populates on the occurrence record and this tool
+ * dropped. Fixture values are from live records: GADM level3 and eventTime from
+ * occurrence 5938104699 (a South African record reaching municipality level).
+ */
+describe('gbifGetOccurrence newly surfaced record fields', () => {
+  const mockGetOccurrence = vi.fn();
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getGbifService).mockReturnValue({ getOccurrence: mockGetOccurrence } as never);
+  });
+
+  async function fetchRecord(raw: Record<string, unknown>) {
+    mockGetOccurrence.mockResolvedValue(raw);
+    const ctx = createMockContext({ errors: gbifGetOccurrence.errors });
+    return gbifGetOccurrence.handler(
+      gbifGetOccurrence.input.parse({ occurrenceKey: raw.key as number }),
+      ctx,
+    );
+  }
+
+  it('surfaces occurrenceStatus, iucnRedListCategory, taxonomicStatus, and eventTime', async () => {
+    const result = await fetchRecord({
+      key: 5938104699,
+      occurrenceStatus: 'PRESENT',
+      iucnRedListCategory: 'VU',
+      taxonomicStatus: 'ACCEPTED',
+      eventDate: '2024-03-11T09:15:50',
+      eventTime: '09:15:50+02:00',
+    });
+
+    expect(result.occurrenceStatus).toBe('PRESENT');
+    expect(result.iucnRedListCategory).toBe('VU');
+    expect(result.taxonomicStatus).toBe('ACCEPTED');
+    expect(result.eventTime).toBe('09:15:50+02:00');
+  });
+
+  /**
+   * An ABSENT record documents a survey that looked and found nothing. It arrives
+   * with coordinates, a date, and a recorder, so without the status a caller reads
+   * it as evidence of the opposite of what it asserts.
+   */
+  it('marks an absence record as such rather than as a sighting', async () => {
+    const result = await fetchRecord({
+      key: 6222223951,
+      canonicalName: 'Radicipes gracilis',
+      occurrenceStatus: 'ABSENT',
+      decimalLatitude: 60.1,
+      decimalLongitude: 5.3,
+      recordedBy: 'MAREANO',
+    });
+
+    expect(result.occurrenceStatus).toBe('ABSENT');
+    const blocks = gbifGetOccurrence.format!(result);
+    const text = blocks[0].type === 'text' ? blocks[0].text : '';
+    expect(text).toContain('ABSENT');
+  });
+
+  it('projects GADM level3 and renders it at the end of the chain (#44)', async () => {
+    const result = await fetchRecord({
+      key: 5938104699,
+      gadm: {
+        level0: { gid: 'ZAF', name: 'South Africa' },
+        level1: { gid: 'ZAF.6_1', name: 'Mpumalanga' },
+        level2: { gid: 'ZAF.6.1_1', name: 'Ehlanzeni' },
+        level3: { gid: 'ZAF.6.1.1_1', name: 'Bushbuckridge' },
+      },
+    });
+
+    expect(result.gadm?.level3).toEqual({ gid: 'ZAF.6.1.1_1', name: 'Bushbuckridge' });
+
+    const blocks = gbifGetOccurrence.format!(result);
+    const text = blocks[0].type === 'text' ? blocks[0].text : '';
+    expect(text).toContain('Bushbuckridge (ZAF.6.1.1_1)');
+    expect(text).toMatch(/South Africa.*Bushbuckridge/);
+  });
+
+  /**
+   * Coverage is region-dependent — Sweden does not subdivide past level2 — so a
+   * missing level3 must stay absent rather than surfacing as an empty object.
+   */
+  it('leaves level3 absent where the country does not subdivide that far', async () => {
+    const result = await fetchRecord({
+      key: 5938044864,
+      gadm: {
+        level0: { gid: 'SWE', name: 'Sweden' },
+        level1: { gid: 'SWE.2_1', name: 'Norrbotten' },
+      },
+    });
+
+    expect(result.gadm?.level0).toEqual({ gid: 'SWE', name: 'Sweden' });
+    expect(result.gadm?.level3).toBeUndefined();
+  });
+
+  /** A GADM object carrying only an empty level3 is not GADM data. */
+  it('omits gadm entirely when level3 is the only key and it is empty', async () => {
+    const result = await fetchRecord({ key: 303, gadm: { level3: {} } });
+
+    expect(result.gadm).toBeUndefined();
+  });
+
+  it('leaves all four fields absent on a sparse record', async () => {
+    const result = await fetchRecord({ key: 304 });
+
+    expect(result.occurrenceStatus).toBeUndefined();
+    expect(result.iucnRedListCategory).toBeUndefined();
+    expect(result.taxonomicStatus).toBeUndefined();
+    expect(result.eventTime).toBeUndefined();
+  });
+
+  /**
+   * eventTime carries the UTC offset eventDate omits, so it has to render even
+   * when eventDate already shows a timestamp — the two are not alternatives.
+   */
+  it('renders the remaining fields in the text surface', () => {
+    const blocks = gbifGetOccurrence.format!({
+      key: 5938104699,
+      canonicalName: 'Panthera leo',
+      taxonomicStatus: 'ACCEPTED',
+      iucnRedListCategory: 'VU',
+      eventDate: '2024-03-11T09:15:50',
+      eventTime: '09:15:50+02:00',
+    });
+    const text = blocks[0].type === 'text' ? blocks[0].text : '';
+    expect(text).toContain('Taxonomic status:** ACCEPTED');
+    expect(text).toContain('IUCN Red List category:** VU');
+    expect(text).toContain('2024-03-11T09:15:50');
+    expect(text).toContain('09:15:50+02:00');
+  });
+});

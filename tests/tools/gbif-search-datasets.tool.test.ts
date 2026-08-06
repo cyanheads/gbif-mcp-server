@@ -210,6 +210,39 @@ describe('gbifSearchDatasets', () => {
     expect(text).toContain('OCCURRENCE');
   });
 
+  /**
+   * #48 — recordCount spans every occurrenceStatus while gbif_count_occurrences
+   * defaults to PRESENT, so the field has to name its own scope and the tool that
+   * answers the other question. Without both, a 499x gap reads as a data error.
+   */
+  it('scopes the recordCount description and names the presence-scoped tool', () => {
+    const description =
+      gbifSearchDatasets.output.shape.datasets.element.shape.recordCount.description ?? '';
+
+    expect(description).toContain('occurrenceStatus');
+    expect(description).toContain('absence records');
+    expect(description).toContain('gbif_count_occurrences');
+  });
+
+  it('states the recordCount scope in content once, and only when a count is rendered', () => {
+    const counted = gbifSearchDatasets.format!({
+      datasets: [
+        { key: 'a', title: 'A', recordCount: 30622351 },
+        { key: 'b', title: 'B', recordCount: 61357 },
+      ],
+    });
+    const countedText = counted[0].type === 'text' ? counted[0].text : '';
+    expect(countedText).toContain('absences included');
+    expect(countedText).toContain('gbif_count_occurrences');
+    expect(countedText.match(/absences included/g)).toHaveLength(1);
+
+    const uncounted = gbifSearchDatasets.format!({
+      datasets: [{ key: 'c', title: 'C' }],
+    });
+    const uncountedText = uncounted[0].type === 'text' ? uncounted[0].text : '';
+    expect(uncountedText).not.toContain('absences included');
+  });
+
   it('renders the truncation marker in content only when descriptionTruncated', () => {
     const truncated = gbifSearchDatasets.format!({
       datasets: [

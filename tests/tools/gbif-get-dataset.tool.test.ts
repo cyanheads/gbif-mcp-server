@@ -19,6 +19,8 @@ const EBIRD_KEY = '4fa7b334-ce0d-4e88-aaae-2e0c138d049e';
 const INAT_KEY = '50c9509d-22c7-4a22-a47d-8c48425ef4a7';
 /** Well-formed UUID GBIF has never allocated. */
 const MISSING_KEY = '00000000-0000-0000-0000-000000000000';
+/** Visuelle undersøkelser - petroleumsvirksomhet — a SAMPLING_EVENT dataset, 99.8% absences. */
+const ABSENCE_HEAVY_KEY = 'b6b4502f-ffc8-4048-a91b-af502288faa8';
 
 /** Build N synthetic dataset contacts mirroring GBIF's flat contact shape. */
 function makeContacts(n: number) {
@@ -111,9 +113,9 @@ describe('gbifGetDataset', () => {
   });
 
   /**
-   * #40 — /dataset/{key} supplies neither field on any dataset, so an OCCURRENCE
-   * dataset gets the figure from the indexed occurrence count instead of leaving
-   * a detail lookup reporting less than gbif_search_datasets does.
+   * #40 — /dataset/{key} supplies neither field on any dataset, so the figure comes
+   * from the indexed occurrence count instead of leaving a detail lookup reporting
+   * less than gbif_search_datasets does.
    */
   it('fills recordCount from the occurrence count when the detail record omits it', async () => {
     mockGetDataset.mockResolvedValue({ key: EBIRD_KEY, type: 'OCCURRENCE' });
@@ -139,15 +141,60 @@ describe('gbifGetDataset', () => {
     expect(result.recordCount).toBeUndefined();
   });
 
-  it('does not count occurrences for a non-OCCURRENCE dataset', async () => {
+  /**
+   * #48 — `/dataset/search` reports a recordCount for every dataset type, and the
+   * absence-heavy dataset the report is written against is a SAMPLING_EVENT. Gating
+   * the lookup on OCCURRENCE left the detail surfaces silent on exactly the datasets
+   * the list surface counts, contradicting their claim to match it.
+   */
+  it('resolves recordCount for a non-OCCURRENCE dataset', async () => {
+    mockGetDataset.mockResolvedValue({ key: ABSENCE_HEAVY_KEY, type: 'SAMPLING_EVENT' });
+    mockCount.mockResolvedValue(30622351);
+
+    const ctx = createMockContext({ errors: gbifGetDataset.errors });
+    const input = gbifGetDataset.input.parse({ datasetKey: ABSENCE_HEAVY_KEY });
+    const result = await gbifGetDataset.handler(input, ctx);
+
+    expect(mockCount).toHaveBeenCalledWith(ABSENCE_HEAVY_KEY, ctx);
+    expect(result.recordCount).toBe(30622351);
+  });
+
+  it('resolves recordCount for a CHECKLIST dataset, which indexes no occurrences', async () => {
     mockGetDataset.mockResolvedValue({ key: INAT_KEY, type: 'CHECKLIST' });
+    mockCount.mockResolvedValue(0);
 
     const ctx = createMockContext({ errors: gbifGetDataset.errors });
     const input = gbifGetDataset.input.parse({ datasetKey: INAT_KEY });
     const result = await gbifGetDataset.handler(input, ctx);
 
-    expect(mockCount).not.toHaveBeenCalled();
-    expect(result.recordCount).toBeUndefined();
+    expect(mockCount).toHaveBeenCalledWith(INAT_KEY, ctx);
+    expect(result.recordCount).toBe(0);
+  });
+
+  /**
+   * #48 — recordCount spans every occurrenceStatus while gbif_count_occurrences
+   * defaults to PRESENT, so the field has to name its own scope and the tool that
+   * answers the other question. Without both, a 499x gap reads as a data error.
+   */
+  it('scopes the recordCount description and names the presence-scoped tool', () => {
+    const description = gbifGetDataset.output.shape.recordCount.description ?? '';
+
+    expect(description).toContain('occurrenceStatus');
+    expect(description).toContain('absence records');
+    expect(description).toContain('gbif_count_occurrences');
+  });
+
+  it('renders the recordCount scope in content, which carries no output schema', () => {
+    const blocks = gbifGetDataset.format!({
+      key: ABSENCE_HEAVY_KEY,
+      title: 'Visuelle undersøkelser',
+      recordCount: 30622351,
+    });
+    const text = blocks[0].type === 'text' ? blocks[0].text : '';
+
+    expect(text).toContain('30,622,351');
+    expect(text).toContain('absences included');
+    expect(text).toContain('gbif_count_occurrences');
   });
 
   /** #38 — a malformed key fails locally with guidance, not as a bare upstream 400. */

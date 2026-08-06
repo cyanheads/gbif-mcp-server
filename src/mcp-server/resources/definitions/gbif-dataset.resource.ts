@@ -46,7 +46,7 @@ export const gbifDatasetResource = resource('gbif://dataset/{datasetKey}', {
       .number()
       .optional()
       .describe(
-        'Occurrence records GBIF has indexed for this dataset, matching the figure gbif_search_datasets reports. Fetched separately for OCCURRENCE datasets because the detail endpoint omits it; absent for other dataset types and when that lookup does not return in time.',
+        'Occurrence records GBIF has indexed for this dataset, matching the figure gbif_search_datasets reports. Spans every occurrenceStatus: absence records — surveys that looked for a taxon and did not find it — are counted alongside sightings, and on some datasets they are the overwhelming majority. gbif_count_occurrences with this datasetKey answers the other question, defaulting to occurrenceStatus PRESENT, so the two figures are expected to differ rather than one being wrong. Fetched separately because the detail endpoint omits it; absent when that lookup does not return in time.',
       ),
     numConstituents: z.number().optional().describe('Number of sub-datasets. May be absent.'),
     contacts: z

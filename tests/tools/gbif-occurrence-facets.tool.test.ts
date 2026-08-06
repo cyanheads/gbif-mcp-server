@@ -52,7 +52,9 @@ describe('gbifOccurrenceFacets', () => {
     expect(enrichment.facetLimit).toBe(10); // default
     expect(enrichment.facetOffset).toBe(0); // default
     expect(enrichment.moreValuesLikely).toBe(false); // 3 counts < facetLimit 10
-    expect(enrichment.notice).toBeUndefined();
+    // The PRESENT default is announced, so a populated aggregation still carries a notice.
+    expect(enrichment.occurrenceStatus).toBe('PRESENT');
+    expect(enrichment.notice).toContain('Absence records');
   });
 
   it('enriches with notice when no facet data returned', async () => {
@@ -308,5 +310,120 @@ describe('gbifOccurrenceFacets', () => {
     await gbifOccurrenceFacets.handler(input, ctx);
 
     expect(getEnrichment(ctx).moreValuesLikely).toBe(false);
+  });
+});
+
+/**
+ * #36/#37 — two dimensions GBIF facets on but this tool did not offer, plus the
+ * presence/absence scope that keeps the aggregation agreeing with
+ * gbif_count_occurrences on the same filters.
+ */
+describe('gbifOccurrenceFacets occurrenceStatus and IUCN dimensions', () => {
+  const mockGetOccurrenceFacets = vi.fn();
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getGbifService).mockReturnValue({
+      getOccurrenceFacets: mockGetOccurrenceFacets,
+    } as never);
+    mockGetOccurrenceFacets.mockResolvedValue({ count: 0, facets: [] });
+  });
+
+  it('accepts OCCURRENCE_STATUS and IUCN_RED_LIST_CATEGORY as dimensions', () => {
+    expect(() => gbifOccurrenceFacets.input.parse({ facet: 'OCCURRENCE_STATUS' })).not.toThrow();
+    expect(() =>
+      gbifOccurrenceFacets.input.parse({ facet: 'IUCN_RED_LIST_CATEGORY' }),
+    ).not.toThrow();
+  });
+
+  it('scopes to PRESENT by default and announces it', async () => {
+    const ctx = createMockContext();
+    const input = gbifOccurrenceFacets.input.parse({ facet: 'COUNTRY', taxonKey: 5219404 });
+    await gbifOccurrenceFacets.handler(input, ctx);
+
+    expect(mockGetOccurrenceFacets).toHaveBeenCalledWith(
+      expect.objectContaining({ occurrenceStatus: 'PRESENT' }),
+      ctx,
+    );
+    expect(getEnrichment(ctx).occurrenceStatus).toBe('PRESENT');
+  });
+
+  /**
+   * The default would collapse an OCCURRENCE_STATUS aggregation to one bucket, so
+   * ANY has to reach the service as an omitted parameter for the split to be
+   * measurable in a single call.
+   */
+  it('omits the scope for ANY so both buckets are measurable in one call', async () => {
+    mockGetOccurrenceFacets.mockResolvedValue({
+      count: 2351582,
+      facets: [
+        {
+          field: 'OCCURRENCE_STATUS',
+          counts: [
+            { name: 'ABSENT', count: 2351503 },
+            { name: 'PRESENT', count: 79 },
+          ],
+        },
+      ],
+    });
+
+    const ctx = createMockContext();
+    const input = gbifOccurrenceFacets.input.parse({
+      facet: 'OCCURRENCE_STATUS',
+      taxonKey: 2263005,
+      occurrenceStatus: 'ANY',
+    });
+    const result = await gbifOccurrenceFacets.handler(input, ctx);
+
+    expect(mockGetOccurrenceFacets).toHaveBeenCalledWith(
+      expect.not.objectContaining({ occurrenceStatus: expect.anything() }),
+      ctx,
+    );
+    expect(result.counts).toHaveLength(2);
+    expect(getEnrichment(ctx).notice).toBeUndefined();
+  });
+
+  it('keeps the empty-facet guidance alongside the scope announcement', async () => {
+    const ctx = createMockContext();
+    const input = gbifOccurrenceFacets.input.parse({ facet: 'YEAR' });
+    await gbifOccurrenceFacets.handler(input, ctx);
+
+    const notice = getEnrichment(ctx).notice as string;
+    expect(notice).toContain('No facet values returned');
+    expect(notice).toContain('Absence records');
+  });
+
+  it('passes iucnRedListCategory as a scope and omits it when unset', async () => {
+    const ctx = createMockContext();
+    await gbifOccurrenceFacets.handler(
+      gbifOccurrenceFacets.input.parse({ facet: 'COUNTRY', iucnRedListCategory: 'EN' }),
+      ctx,
+    );
+    expect(mockGetOccurrenceFacets).toHaveBeenCalledWith(
+      expect.objectContaining({ iucnRedListCategory: 'EN' }),
+      ctx,
+    );
+
+    vi.clearAllMocks();
+    mockGetOccurrenceFacets.mockResolvedValue({ count: 0, facets: [] });
+    const ctx2 = createMockContext();
+    await gbifOccurrenceFacets.handler(
+      gbifOccurrenceFacets.input.parse({ facet: 'COUNTRY' }),
+      ctx2,
+    );
+    expect(mockGetOccurrenceFacets).toHaveBeenCalledWith(
+      expect.not.objectContaining({ iucnRedListCategory: expect.anything() }),
+      ctx2,
+    );
+  });
+
+  /** GBIF answers an unrecognized category with a silent zero, so the enum is the guard. */
+  it('rejects scope values GBIF would answer with a silent zero', () => {
+    expect(() =>
+      gbifOccurrenceFacets.input.parse({ facet: 'COUNTRY', iucnRedListCategory: 'NE' }),
+    ).toThrow();
+    expect(() =>
+      gbifOccurrenceFacets.input.parse({ facet: 'COUNTRY', occurrenceStatus: 'BOGUS' }),
+    ).toThrow();
   });
 });

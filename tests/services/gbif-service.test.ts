@@ -283,3 +283,145 @@ describe('GbifService request deadline', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
+
+/**
+ * #36/#37 — `/occurrence/count` accepts a closed parameter set and answers
+ * `Invalid parameter name` for both `occurrenceStatus` and
+ * `iucnRedListCategory`, so the presence/absence default the occurrence tools
+ * apply is unreachable through it. `countOccurrences` reads the total from
+ * `/occurrence/search?limit=0` instead; these pin the two ways that migration
+ * can silently produce a wrong number.
+ */
+describe('GbifService.countOccurrences endpoint', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ count: 19063, results: [] })));
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** URL of the single fetch the service issued. */
+  function sentUrl(): URL {
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    return new URL(fetchMock.mock.calls[0]?.[0] as string);
+  }
+
+  function service(): GbifService {
+    return new GbifService(appConfig, storage, {
+      baseUrl: 'https://api.gbif.org/v1',
+      timeoutMs: 1_000,
+    });
+  }
+
+  it('reads the total from the search endpoint at limit=0, not /occurrence/count', async () => {
+    const count = await service().countOccurrences({ taxonKey: 5219404 }, createMockContext());
+
+    const url = sentUrl();
+    expect(url.pathname).toBe('/v1/occurrence/search');
+    expect(url.searchParams.get('limit')).toBe('0');
+    // The body is a search response, so the total comes from `count`, not the whole payload.
+    expect(count).toBe(19063);
+  });
+
+  /**
+   * `/occurrence/search` has no `isGeoreferenced` parameter and does not reject
+   * one — it ignores it and answers with the unfiltered total. Forwarding the
+   * name verbatim would drop the filter and report a number far too large, so
+   * the service maps it to `hasCoordinate`, which returns identical figures.
+   */
+  it('maps isGeoreferenced to hasCoordinate rather than forwarding a name search ignores', async () => {
+    await service().countOccurrences({ taxonKey: 212, isGeoreferenced: true }, createMockContext());
+
+    const url = sentUrl();
+    expect(url.searchParams.get('hasCoordinate')).toBe('true');
+    expect(url.searchParams.has('isGeoreferenced')).toBe(false);
+  });
+
+  it('maps isGeoreferenced false, not just true', async () => {
+    await service().countOccurrences({ isGeoreferenced: false }, createMockContext());
+
+    expect(sentUrl().searchParams.get('hasCoordinate')).toBe('false');
+  });
+
+  it('sends the filters /occurrence/count rejects', async () => {
+    await service().countOccurrences(
+      { taxonKey: 5219404, occurrenceStatus: 'PRESENT', iucnRedListCategory: 'VU' },
+      createMockContext(),
+    );
+
+    const url = sentUrl();
+    expect(url.searchParams.get('occurrenceStatus')).toBe('PRESENT');
+    expect(url.searchParams.get('iucnRedListCategory')).toBe('VU');
+  });
+
+  it('reports zero when the search response carries no count', async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ results: [] })));
+
+    const count = await service().countOccurrences({ taxonKey: 1 }, createMockContext());
+
+    expect(count).toBe(0);
+  });
+});
+
+/** #36/#37 — the same two filters have to reach the search and facet endpoints. */
+describe('GbifService occurrence filter pass-through', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ count: 0, results: [] })));
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function sentParams(): URLSearchParams {
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    return new URL(fetchMock.mock.calls[0]?.[0] as string).searchParams;
+  }
+
+  function service(): GbifService {
+    return new GbifService(appConfig, storage, {
+      baseUrl: 'https://api.gbif.org/v1',
+      timeoutMs: 1_000,
+    });
+  }
+
+  it('sends occurrenceStatus and iucnRedListCategory on searchOccurrences', async () => {
+    await service().searchOccurrences(
+      { taxonKey: 5219404, occurrenceStatus: 'ABSENT', iucnRedListCategory: 'EN' },
+      createMockContext(),
+    );
+
+    const params = sentParams();
+    expect(params.get('occurrenceStatus')).toBe('ABSENT');
+    expect(params.get('iucnRedListCategory')).toBe('EN');
+  });
+
+  it('sends occurrenceStatus and iucnRedListCategory on getOccurrenceFacets', async () => {
+    await service().getOccurrenceFacets(
+      { facet: 'COUNTRY', occurrenceStatus: 'PRESENT', iucnRedListCategory: 'CR' },
+      createMockContext(),
+    );
+
+    const params = sentParams();
+    expect(params.get('facet')).toBe('COUNTRY');
+    expect(params.get('occurrenceStatus')).toBe('PRESENT');
+    expect(params.get('iucnRedListCategory')).toBe('CR');
+  });
+
+  it('omits both filters when the caller supplies neither', async () => {
+    await service().searchOccurrences({ taxonKey: 1 }, createMockContext());
+
+    const params = sentParams();
+    expect(params.has('occurrenceStatus')).toBe(false);
+    expect(params.has('iucnRedListCategory')).toBe(false);
+  });
+});

@@ -6,6 +6,7 @@
 import type { Context } from '@cyanheads/mcp-ts-core';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 import type {
+  OccurrenceStatusFilter,
   RawContact,
   RawDatasetRecord,
   RawGeographicCoverage,
@@ -19,17 +20,33 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
  * True when `value` is a well-formed GBIF registry key (dataset, organization).
  *
  * Callers check before issuing a request because GBIF handles a malformed key two
- * incompatible ways: most endpoints answer HTTP 400 `Invalid UUID string`, but
+ * incompatible ways: most endpoints answer HTTP 400 `Invalid UUID string`, while
  * `/occurrence/count` answers 200 with a count of 0 — a wrong answer rather than
- * an error. Rejecting locally makes both cases one explicit failure.
+ * an error. Rejecting locally makes both cases one explicit failure carrying the
+ * tool's own recovery hint, and spends no retry budget on a deterministic 400.
  *
  * Matched without trimming, because callers forward the value they were given
- * rather than a normalized copy: accepting surrounding whitespace here would wave
- * through a key that still reaches `/occurrence/count` malformed, restoring the
- * silent zero this check exists to prevent.
+ * rather than a normalized copy: a padded key is a caller-side defect, and
+ * surfacing it beats silently normalizing a value the caller believes it sent.
  */
 export function isGbifUuid(value: string): boolean {
   return UUID.test(value);
+}
+
+/**
+ * Agent-facing announcement of the presence/absence filter an occurrence query
+ * applied, or `undefined` when no filter was applied.
+ *
+ * The occurrence tools default to `PRESENT` because an `ABSENT` record documents
+ * a survey that looked and did not find the taxon — counting one as a sighting
+ * inverts what the record asserts. The default must never be silent, so every
+ * tool that applies it emits this alongside its results.
+ */
+export function occurrenceStatusNotice(status: OccurrenceStatusFilter): string | undefined {
+  if (status === 'ANY') return;
+  return status === 'PRESENT'
+    ? 'Absence records — occurrenceStatus ABSENT, meaning a survey looked for the taxon and did not find it — are excluded from these figures. Pass occurrenceStatus "ANY" to include them, or "ABSENT" for absences alone.'
+    : 'Only absence records are included — occurrenceStatus ABSENT means a survey looked for the taxon and did not find it, so these are not sightings. Pass occurrenceStatus "ANY" for both, or "PRESENT" for sightings alone.';
 }
 
 /**
@@ -38,10 +55,18 @@ export function isGbifUuid(value: string): boolean {
  *
  * `/dataset/{key}` supplies neither `numRecords` nor `recordCount` for any dataset,
  * while `/dataset/search` supplies `recordCount` — so a detail lookup would report
- * less than the list tool it is meant to expand on. An OCCURRENCE dataset closes
- * that gap with the indexed occurrence count, which is the figure search reports.
- * Other dataset types have no equivalent, and the extra lookup is best-effort, so
- * the field stays absent rather than blocking or failing the record.
+ * less than the list tool it is meant to expand on. The indexed occurrence count
+ * closes that gap, and it does so for every dataset type: `/dataset/search` reports
+ * a figure for all four, and a SAMPLING_EVENT or METADATA dataset carries indexed
+ * occurrences exactly as an OCCURRENCE one does — the largest SAMPLING_EVENT
+ * datasets run to tens of millions. A CHECKLIST answers 0, which is also what
+ * search reports for it. Keying the lookup on `type` is what left the detail
+ * surfaces silent on the datasets the list surface counts.
+ *
+ * The figure spans every `occurrenceStatus`, absences included, so it is not the
+ * number `gbif_count_occurrences` returns for the same key — every surface that
+ * carries it says so. The lookup is supplementary and best-effort, so the field
+ * stays absent rather than blocking or failing the record.
  */
 export function resolveDatasetRecordCount(
   raw: RawDatasetRecord,
@@ -49,7 +74,7 @@ export function resolveDatasetRecordCount(
 ): Promise<number | undefined> {
   const declared = raw.numRecords ?? raw.recordCount;
   if (declared != null) return Promise.resolve(declared);
-  if (raw.type !== 'OCCURRENCE' || !raw.key) return Promise.resolve(undefined);
+  if (!raw.key) return Promise.resolve(undefined);
   return getGbifService().getDatasetOccurrenceCount(raw.key, ctx);
 }
 

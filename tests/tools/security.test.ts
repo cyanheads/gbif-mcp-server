@@ -159,9 +159,10 @@ describe('UUID-typed inputs reject before reaching GBIF', () => {
     });
 
     /**
-     * A padded key is forwarded verbatim, not trimmed, so accepting one would let
-     * it reach GBIF malformed — and `/occurrence/count` answers 200 with `0` for a
-     * malformed key, which is the confident wrong total the check exists to stop.
+     * A padded key is forwarded verbatim, not trimmed, so accepting one would let a
+     * caller-side defect reach GBIF unexamined — and `/occurrence/count`, which the
+     * dataset record-count lookup still uses, answers 200 with `0` for a malformed
+     * key rather than an error.
      */
     it(`${name} rejects a whitespace-padded UUID rather than forwarding it`, async () => {
       const ctx = createMockContext({ errors: def.errors });
@@ -173,6 +174,49 @@ describe('UUID-typed inputs reject before reaching GBIF', () => {
 
       expect(err).toMatchObject({ data: { reason: 'invalid_filter' } });
       expect(mockSearch).not.toHaveBeenCalled();
+    });
+  }
+});
+
+/**
+ * The occurrence presence/absence and IUCN filters are closed vocabularies, and
+ * GBIF treats a bad value in each differently: `occurrenceStatus` draws HTTP 400,
+ * but `iucnRedListCategory` is answered with 200 and a count of zero. A string
+ * that reaches either would therefore be a wrong answer rather than an error at
+ * best, so the schema has to stop it before the handler runs.
+ */
+describe('Closed-vocabulary occurrence filters reject before the handler runs', () => {
+  const enumInputs = [
+    { name: 'gbif_search_occurrences', def: gbifSearchOccurrences, extra: {} },
+    { name: 'gbif_count_occurrences', def: gbifCountOccurrences, extra: {} },
+    { name: 'gbif_occurrence_facets', def: gbifOccurrenceFacets, extra: { facet: 'COUNTRY' } },
+  ] as const;
+
+  for (const { name, def, extra } of enumInputs) {
+    for (const injection of INJECTION_STRINGS) {
+      it(`${name}.occurrenceStatus rejects "${injection.slice(0, 24)}"`, () => {
+        expect(() => def.input.parse({ ...extra, occurrenceStatus: injection })).toThrow();
+      });
+
+      it(`${name}.iucnRedListCategory rejects "${injection.slice(0, 24)}"`, () => {
+        expect(() => def.input.parse({ ...extra, iucnRedListCategory: injection })).toThrow();
+      });
+    }
+
+    /**
+     * The enum is load-bearing only if the field is actually declared — an
+     * undeclared key is stripped by Zod and every rejection assertion above would
+     * hold against a tool that never had the filter.
+     */
+    it(`${name} declares both filters rather than silently stripping them`, () => {
+      const parsed = def.input.parse({
+        ...extra,
+        occurrenceStatus: 'ABSENT',
+        iucnRedListCategory: 'CR',
+      }) as Record<string, unknown>;
+
+      expect(parsed.occurrenceStatus).toBe('ABSENT');
+      expect(parsed.iucnRedListCategory).toBe('CR');
     });
   }
 });

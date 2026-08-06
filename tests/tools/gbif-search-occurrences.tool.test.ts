@@ -74,7 +74,9 @@ describe('gbifSearchOccurrences', () => {
     expect(enrichment.endOfRecords).toBe(false);
     expect(enrichment.offset).toBe(0);
     expect(enrichment.limit).toBe(20);
-    expect(enrichment.notice).toBeUndefined();
+    // The PRESENT default is announced, so a successful page still carries a notice.
+    expect(enrichment.occurrenceStatus).toBe('PRESENT');
+    expect(enrichment.notice).toContain('Absence records');
   });
 
   it('normalizes taxonRank to rank', async () => {
@@ -353,5 +355,278 @@ describe('gbifSearchOccurrences', () => {
     expect(desc).toContain('Omit the parameter');
     // guard against the prior misleading wording (false claimed to include such records)
     expect(desc).not.toContain('When false, include records without coordinates');
+  });
+});
+
+/**
+ * #36 — GBIF's index carries absence records (a survey that looked for the taxon
+ * and did not find it) alongside sightings, with the same coordinates, dates, and
+ * recorder. Verified live: taxonKey 2263005 returns 2,351,582 records of which 79
+ * are PRESENT. The tool filters to PRESENT unless told otherwise, and never
+ * silently.
+ */
+describe('gbifSearchOccurrences occurrenceStatus (#36)', () => {
+  const mockSearchOccurrences = vi.fn();
+
+  const emptyPage = { results: [], count: 0, offset: 0, limit: 20, endOfRecords: true };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getGbifService).mockReturnValue({
+      searchOccurrences: mockSearchOccurrences,
+    } as never);
+    mockSearchOccurrences.mockResolvedValue(emptyPage);
+  });
+
+  it('sends PRESENT when the caller says nothing', async () => {
+    const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
+    const input = gbifSearchOccurrences.input.parse({ taxonKey: 2263005 });
+    await gbifSearchOccurrences.handler(input, ctx);
+
+    expect(mockSearchOccurrences).toHaveBeenCalledWith(
+      expect.objectContaining({ occurrenceStatus: 'PRESENT' }),
+      ctx,
+    );
+  });
+
+  /**
+   * GBIF's OccurrenceStatus vocabulary is exactly PRESENT and ABSENT — sending
+   * "ANY" draws HTTP 400 `Cannot parse ANY into a known OccurrenceStatus`, so the
+   * sentinel has to resolve to an omitted parameter.
+   */
+  it('omits the parameter for ANY rather than sending a term GBIF rejects', async () => {
+    const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
+    const input = gbifSearchOccurrences.input.parse({
+      taxonKey: 2263005,
+      occurrenceStatus: 'ANY',
+    });
+    await gbifSearchOccurrences.handler(input, ctx);
+
+    expect(mockSearchOccurrences).toHaveBeenCalledWith(
+      expect.not.objectContaining({ occurrenceStatus: expect.anything() }),
+      ctx,
+    );
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.occurrenceStatus).toBe('ANY');
+    expect(enrichment.notice).not.toContain('Absence records');
+  });
+
+  it('sends ABSENT and warns the page is not sightings', async () => {
+    const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
+    const input = gbifSearchOccurrences.input.parse({ occurrenceStatus: 'ABSENT' });
+    await gbifSearchOccurrences.handler(input, ctx);
+
+    expect(mockSearchOccurrences).toHaveBeenCalledWith(
+      expect.objectContaining({ occurrenceStatus: 'ABSENT' }),
+      ctx,
+    );
+    expect(getEnrichment(ctx).notice).toContain('not sightings');
+  });
+
+  /**
+   * The empty-result guidance and the presence/absence announcement can fire on
+   * the same call — an over-narrow filter is exactly when a caller needs both.
+   */
+  it('keeps the empty-result guidance alongside the default announcement', async () => {
+    const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
+    const input = gbifSearchOccurrences.input.parse({ taxonKey: 99999 });
+    await gbifSearchOccurrences.handler(input, ctx);
+
+    const notice = getEnrichment(ctx).notice as string;
+    expect(notice).toContain('No occurrences matched');
+    expect(notice).toContain('Absence records');
+  });
+
+  it('states the PRESENT default in the schema so tools/list carries it', () => {
+    const described = gbifSearchOccurrences.input.shape.occurrenceStatus.description ?? '';
+    expect(described).toContain('PRESENT');
+    expect(described).toContain('ANY');
+    expect(gbifSearchOccurrences.input.parse({}).occurrenceStatus).toBe('PRESENT');
+  });
+
+  it('rejects an occurrenceStatus outside the accepted three', () => {
+    expect(() => gbifSearchOccurrences.input.parse({ occurrenceStatus: 'BOGUS' })).toThrow();
+  });
+
+  it('surfaces occurrenceStatus on the returned record', async () => {
+    mockSearchOccurrences.mockResolvedValue({
+      ...emptyPage,
+      results: [makeOccurrence({ occurrenceStatus: 'ABSENT' })],
+      count: 1,
+    });
+
+    const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
+    const input = gbifSearchOccurrences.input.parse({ occurrenceStatus: 'ABSENT' });
+    const result = await gbifSearchOccurrences.handler(input, ctx);
+
+    expect(result.occurrences[0].occurrenceStatus).toBe('ABSENT');
+  });
+
+  /**
+   * A `content[]`-only client never sees structuredContent, so an absence is
+   * indistinguishable from a sighting unless format() renders the status.
+   */
+  it('renders occurrenceStatus in the text surface', () => {
+    const blocks = gbifSearchOccurrences.format!({
+      occurrences: [
+        { key: 6222223951, canonicalName: 'Radicipes gracilis', occurrenceStatus: 'ABSENT' },
+      ],
+    });
+    const text = blocks[0].type === 'text' ? blocks[0].text : '';
+    expect(text).toContain('ABSENT');
+  });
+});
+
+/** #37 — IUCN Red List category as a filter and an output field. */
+describe('gbifSearchOccurrences iucnRedListCategory (#37)', () => {
+  const mockSearchOccurrences = vi.fn();
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getGbifService).mockReturnValue({
+      searchOccurrences: mockSearchOccurrences,
+    } as never);
+    mockSearchOccurrences.mockResolvedValue({
+      results: [],
+      count: 0,
+      offset: 0,
+      limit: 20,
+      endOfRecords: true,
+    });
+  });
+
+  it('passes the category to the service', async () => {
+    const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
+    const input = gbifSearchOccurrences.input.parse({
+      taxonKey: 5219404,
+      iucnRedListCategory: 'VU',
+    });
+    await gbifSearchOccurrences.handler(input, ctx);
+
+    expect(mockSearchOccurrences).toHaveBeenCalledWith(
+      expect.objectContaining({ iucnRedListCategory: 'VU' }),
+      ctx,
+    );
+  });
+
+  it('omits the category when not provided', async () => {
+    const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
+    const input = gbifSearchOccurrences.input.parse({ taxonKey: 5219404 });
+    await gbifSearchOccurrences.handler(input, ctx);
+
+    expect(mockSearchOccurrences).toHaveBeenCalledWith(
+      expect.not.objectContaining({ iucnRedListCategory: expect.anything() }),
+      ctx,
+    );
+  });
+
+  /**
+   * GBIF answers an unrecognized category with HTTP 200 and a count of zero, not
+   * an error, so the enum is the only guard against a confident empty answer. NE
+   * is excluded on the same grounds — it matches no record in the index.
+   */
+  it('rejects a category GBIF would answer with a silent zero', () => {
+    expect(() =>
+      gbifSearchOccurrences.input.parse({ iucnRedListCategory: 'VULNERABLE' }),
+    ).toThrow();
+    expect(() => gbifSearchOccurrences.input.parse({ iucnRedListCategory: 'NE' })).toThrow();
+    expect(() => gbifSearchOccurrences.input.parse({ iucnRedListCategory: 'VU' })).not.toThrow();
+  });
+
+  it('surfaces and renders the category on a record', async () => {
+    mockSearchOccurrences.mockResolvedValue({
+      results: [makeOccurrence({ iucnRedListCategory: 'VU' })],
+      count: 1,
+      offset: 0,
+      limit: 20,
+      endOfRecords: true,
+    });
+
+    const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
+    const result = await gbifSearchOccurrences.handler(gbifSearchOccurrences.input.parse({}), ctx);
+
+    expect(result.occurrences[0].iucnRedListCategory).toBe('VU');
+    const blocks = gbifSearchOccurrences.format!(result);
+    const text = blocks[0].type === 'text' ? blocks[0].text : '';
+    expect(text).toContain('IUCN Red List category');
+    expect(text).toContain('VU');
+  });
+});
+
+/** #44 — taxonomicStatus and eventTime, both populated upstream and both dropped. */
+describe('gbifSearchOccurrences taxonomicStatus and eventTime (#44)', () => {
+  const mockSearchOccurrences = vi.fn();
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getGbifService).mockReturnValue({
+      searchOccurrences: mockSearchOccurrences,
+    } as never);
+  });
+
+  it('surfaces both on a populated record', async () => {
+    mockSearchOccurrences.mockResolvedValue({
+      results: [
+        makeOccurrence({
+          taxonomicStatus: 'PROVISIONALLY_ACCEPTED',
+          eventDate: '2026-01-28T20:15',
+          eventTime: '20:15:00+01:00',
+        }),
+      ],
+      count: 1,
+      offset: 0,
+      limit: 20,
+      endOfRecords: true,
+    });
+
+    const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
+    const result = await gbifSearchOccurrences.handler(gbifSearchOccurrences.input.parse({}), ctx);
+
+    const occ = result.occurrences[0];
+    expect(occ.taxonomicStatus).toBe('PROVISIONALLY_ACCEPTED');
+    expect(occ.eventTime).toBe('20:15:00+01:00');
+  });
+
+  /**
+   * eventTime is not a fallback for a missing eventDate time — in a 300-record
+   * sample every record carrying eventTime also carried a timestamped eventDate.
+   * What it adds is the UTC offset eventDate drops, so the text surface has to
+   * render it even when a date is already shown.
+   */
+  it('renders the offset-bearing time alongside the date', () => {
+    const blocks = gbifSearchOccurrences.format!({
+      occurrences: [
+        {
+          key: 1,
+          canonicalName: 'Parus major',
+          taxonomicStatus: 'ACCEPTED',
+          eventDate: '2026-01-28T20:15',
+          eventTime: '20:15:00+01:00',
+        },
+      ],
+    });
+    const text = blocks[0].type === 'text' ? blocks[0].text : '';
+    expect(text).toContain('2026-01-28T20:15');
+    expect(text).toContain('20:15:00+01:00');
+    expect(text).toContain('ACCEPTED');
+  });
+
+  it('leaves both absent on a sparse record', async () => {
+    mockSearchOccurrences.mockResolvedValue({
+      results: [{ key: 999 }],
+      count: 1,
+      offset: 0,
+      limit: 20,
+      endOfRecords: true,
+    });
+
+    const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
+    const result = await gbifSearchOccurrences.handler(gbifSearchOccurrences.input.parse({}), ctx);
+
+    const occ = result.occurrences[0];
+    expect(occ.taxonomicStatus).toBeUndefined();
+    expect(occ.eventTime).toBeUndefined();
+    expect(occ.occurrenceStatus).toBeUndefined();
+    expect(occ.iucnRedListCategory).toBeUndefined();
   });
 });

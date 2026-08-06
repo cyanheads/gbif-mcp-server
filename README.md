@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.5.5-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/gbif-biodiversity-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.30.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/gbif-biodiversity-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/gbif-biodiversity-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.14-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.6.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/gbif-biodiversity-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.30.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/gbif-biodiversity-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/gbif-biodiversity-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.14-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -35,10 +35,10 @@
 | `gbif_search_species` | Search or browse the GBIF backbone taxonomy by name fragment, rank, kingdom, family, or genus |
 | `gbif_get_species_classification` | Return the root-to-parent classification chain for a taxon — root-first ordered array from kingdom to the queried taxon's immediate parent (the taxon itself is not included) |
 | `gbif_get_species_children` | List direct children of a backbone taxon — genera within a family, species within a genus |
-| `gbif_search_occurrences` | Search 2.4B+ GBIF occurrence records with Darwin Core filters — country, bounding box, WKT geometry, year, month, basis of record |
-| `gbif_count_occurrences` | Count occurrences matching a filter without fetching records — fast single-number response |
-| `gbif_get_occurrence` | Fetch a single occurrence record by key — full Darwin Core record with GADM geography, media, and quality flags |
-| `gbif_occurrence_facets` | Aggregate occurrence counts by a dimension — country, year, basis of record, dataset, kingdom, and more |
+| `gbif_search_occurrences` | Search 2.4B+ GBIF occurrence records with Darwin Core filters — country, bounding box, WKT geometry, year, month, basis of record, presence/absence, IUCN Red List category |
+| `gbif_count_occurrences` | Count occurrences matching a filter without fetching records — fast single-number response, filtered to sightings by default |
+| `gbif_get_occurrence` | Fetch a single occurrence record by key — full Darwin Core record with GADM geography, presence/absence status, conservation status, media, and quality flags |
+| `gbif_occurrence_facets` | Aggregate occurrence counts by a dimension — country, year, basis of record, dataset, kingdom, presence/absence, IUCN Red List category |
 | `gbif_search_datasets` | Search GBIF datasets by keyword, type, country, or publishing organization |
 | `gbif_get_dataset` | Fetch full dataset metadata by UUID — title, description, citation, contacts, license, DOI, coverage |
 | `gbif_search_publishers` | Search GBIF-registered publishing organizations by name fragment or country |
@@ -122,6 +122,9 @@ Search 2.4B+ GBIF occurrence records with full Darwin Core filtering.
 - Temporal filters: `year` as single year or range, `month` (1–12) for seasonal queries
 - `basisOfRecord` enum: `HUMAN_OBSERVATION`, `PRESERVED_SPECIMEN`, `MACHINE_OBSERVATION`, and more
 - `hasCoordinate` to require or exclude georeferenced records
+- `occurrenceStatus` — `PRESENT` (default), `ABSENT`, or `ANY`. GBIF indexes absence records (a survey that looked for the taxon and did not find it) alongside sightings; the default excludes them and the enrichment says so on every call
+- `iucnRedListCategory` — `CR`, `EN`, `VU`, `NT`, `LC`, `DD`, `EX`, `EW`, `CD`
+- Output per record adds `taxonomicStatus`, `eventTime` (with UTC offset), `occurrenceStatus`, and `iucnRedListCategory`
 - Pagination capped at offset+limit = 100,001, the deepest page GBIF serves — use `gbif_occurrence_facets` for aggregate analysis beyond this
 
 ---
@@ -130,8 +133,9 @@ Search 2.4B+ GBIF occurrence records with full Darwin Core filtering.
 
 Count occurrences matching a filter without fetching any records.
 
-- Backed by the lightweight `/occurrence/count` endpoint — fast single-number response
-- Supported filters: `taxonKey`, `country`, `isGeoreferenced`, `datasetKey`, `year`
+- Backed by `/occurrence/search` at `limit=0` — no record payload, and the same endpoint `gbif_search_occurrences` queries, so the two agree on the same question. GBIF's dedicated `/occurrence/count` endpoint takes a closed parameter set that rejects `occurrenceStatus` and `iucnRedListCategory` outright
+- Supported filters: `taxonKey`, `country`, `isGeoreferenced`, `datasetKey`, `year`, `occurrenceStatus`, `iucnRedListCategory`
+- Counts sightings only by default, matching `gbif_search_occurrences`. For absence-heavy taxa the unfiltered figure is a different question entirely — *Radicipes gracilis* has 2,351,582 indexed records of which 79 are presences
 - Use to assess result set size before deciding whether to paginate a full search
 
 ---
@@ -141,7 +145,9 @@ Count occurrences matching a filter without fetching any records.
 Fetch a single occurrence record by GBIF occurrence key.
 
 - Complete Darwin Core record — all coordinate fields, administrative geography (continent, country, state/province, locality), dates
-- `occurrenceID`, full classification (`class`/`classKey`), GADM administrative units (levels 0–2, each with a stable GID and name), and source `identifiers`
+- `occurrenceID`, full classification (`class`/`classKey`), GADM administrative units (levels 0–3, each with a stable GID and name), and source `identifiers`
+- `occurrenceStatus` — check it before reading the record as a sighting; `ABSENT` means a survey looked and found nothing, and the record still carries coordinates, a date, and a recorder
+- `taxonomicStatus`, `eventTime` (with UTC offset), and `iucnRedListCategory`
 - Collections metadata: institution code, collection code, catalog number
 - Collector and identifier names, individual count, sex, life stage
 - Associated media (images, audio, video) with URLs and license
@@ -153,8 +159,9 @@ Fetch a single occurrence record by GBIF occurrence key.
 
 Aggregate occurrence counts across a dimension.
 
-- Facets: `COUNTRY`, `YEAR`, `BASIS_OF_RECORD`, `DATASET_KEY`, `KINGDOM_KEY`, `PHYLUM_KEY`, `CLASS_KEY`, `ORDER_KEY`, `FAMILY_KEY`, `GENUS_KEY`, `SPECIES_KEY`, `PUBLISHING_COUNTRY`, `MONTH`
-- Scope with `taxonKey`, `country`, `year`, `geometry`, or `basisOfRecord` filters
+- Facets: `COUNTRY`, `STATE_PROVINCE`, `YEAR`, `BASIS_OF_RECORD`, `DATASET_KEY`, `KINGDOM_KEY`, `PHYLUM_KEY`, `CLASS_KEY`, `ORDER_KEY`, `FAMILY_KEY`, `GENUS_KEY`, `SPECIES_KEY`, `PUBLISHING_COUNTRY`, `MONTH`, `OCCURRENCE_STATUS`, `IUCN_RED_LIST_CATEGORY`
+- Scope with `taxonKey`, `country`, `year`, `geometry`, `basisOfRecord`, `datasetKey`, `occurrenceStatus`, or `iucnRedListCategory` filters
+- Aggregates sightings only by default, matching the search and count tools. To measure the presence/absence split itself, pass `facet: OCCURRENCE_STATUS` with `occurrenceStatus: ANY`
 - Returns one page of values ranked by count descending — up to `facetLimit` (max 100), the top ones only while `facetOffset` is 0 — with no record payloads
 - Page past the first `facetLimit` with `facetOffset` (advance by `facetLimit` per page) to walk high-cardinality facets like `DATASET_KEY`; enrichment echoes the applied `facetOffset` and sets `moreValuesLikely` when a full page suggests more values remain
 - Core tool for distribution analysis ("which countries have the most records?") and trend queries ("how has observation volume changed since 2010?")
@@ -166,7 +173,8 @@ Aggregate occurrence counts across a dimension.
 Search GBIF datasets by keyword, type, country, or publishing organization.
 
 - Filters: free-text query, dataset type (`OCCURRENCE`, `CHECKLIST`, `METADATA`, `SAMPLING_EVENT`), publishing country, hosting organization UUID
-- Returns title, type, description, license, DOI, and record count. The `description` is a 300-character preview — `descriptionTruncated` flags when it was shortened, and `gbif_get_dataset` returns the full text
+- Returns title, type, description, license, DOI, and record count. `recordCount` spans every `occurrenceStatus`, absences included — `gbif_count_occurrences` with the same key counts sightings only by default, so the two figures differ by design
+- The `description` is a 300-character preview — `descriptionTruncated` flags when it was shortened, and `gbif_get_dataset` returns the full text
 - Use `hostingOrg` from `gbif_search_publishers` to scope to datasets from one organization
 - Paginated — limit up to 1000
 
@@ -179,7 +187,7 @@ Fetch full dataset metadata by UUID.
 - Full description, citation text (for academic reference), license, DOI
 - Contacts with role, name, organization, and email
 - Temporal and geographic coverage ranges when the publisher declares them
-- `recordCount` for `OCCURRENCE` datasets — the indexed occurrence total, matching what `gbif_search_datasets` reports; absent for other dataset types
+- `recordCount` — the indexed occurrence total, matching what `gbif_search_datasets` reports, for every dataset type (a `CHECKLIST` reports 0). It spans every `occurrenceStatus`, absences included; `gbif_count_occurrences` with the same key counts sightings only by default, so the two figures differ by design
 - `numConstituents` for aggregate datasets (e.g. iNaturalist, eBird)
 - Use after `gbif_search_datasets` or when an occurrence record's `datasetKey` needs provenance detail
 

@@ -20,6 +20,8 @@ const EBIRD_KEY = '4fa7b334-ce0d-4e88-aaae-2e0c138d049e';
 const INAT_KEY = '50c9509d-22c7-4a22-a47d-8c48425ef4a7';
 /** Well-formed UUID GBIF has never allocated. */
 const MISSING_KEY = '00000000-0000-0000-0000-000000000000';
+/** Visuelle undersøkelser - petroleumsvirksomhet — a SAMPLING_EVENT dataset, 99.8% absences. */
+const ABSENCE_HEAVY_KEY = 'b6b4502f-ffc8-4048-a91b-af502288faa8';
 
 /** Build N synthetic dataset contacts mirroring GBIF's flat contact shape. */
 function makeContacts(n: number) {
@@ -248,7 +250,7 @@ describe('gbifDatasetResource', () => {
     expect(mockGetDataset).toHaveBeenCalledWith(INAT_KEY, ctx);
   });
 
-  /** #40 — the detail endpoint omits both count fields, so an OCCURRENCE dataset fills it. */
+  /** #40 — the detail endpoint omits both count fields, so the occurrence count fills it. */
   it('fills recordCount from the occurrence count when the detail record omits it', async () => {
     mockGetDataset.mockResolvedValue({ key: EBIRD_KEY, type: 'OCCURRENCE' });
     mockCount.mockResolvedValue(1775781186);
@@ -261,15 +263,32 @@ describe('gbifDatasetResource', () => {
     expect(result.recordCount).toBe(1775781186);
   });
 
-  it('does not count occurrences for a non-OCCURRENCE dataset', async () => {
-    mockGetDataset.mockResolvedValue({ key: INAT_KEY, type: 'CHECKLIST' });
+  /**
+   * #48 — the resource shares the resolver with the tool, so it inherited the same
+   * silence on SAMPLING_EVENT and METADATA datasets that `/dataset/search` counts.
+   */
+  it('resolves recordCount for a non-OCCURRENCE dataset', async () => {
+    mockGetDataset.mockResolvedValue({ key: ABSENCE_HEAVY_KEY, type: 'SAMPLING_EVENT' });
+    mockCount.mockResolvedValue(30622351);
 
     const ctx = createMockContext({ tenantId: 'test-tenant', errors: gbifDatasetResource.errors });
-    const params = gbifDatasetResource.params.parse({ datasetKey: INAT_KEY });
+    const params = gbifDatasetResource.params.parse({ datasetKey: ABSENCE_HEAVY_KEY });
     const result = await gbifDatasetResource.handler(params, ctx);
 
-    expect(mockCount).not.toHaveBeenCalled();
-    expect(result.recordCount).toBeUndefined();
+    expect(mockCount).toHaveBeenCalledWith(ABSENCE_HEAVY_KEY, ctx);
+    expect(result.recordCount).toBe(30622351);
+  });
+
+  /**
+   * #48 — the resource has no format() and reaches a client as its output schema
+   * alone, so the field description is the only place the scope can be stated.
+   */
+  it('scopes the recordCount description and names the presence-scoped tool', () => {
+    const description = gbifDatasetResource.output.shape.recordCount.description ?? '';
+
+    expect(description).toContain('occurrenceStatus');
+    expect(description).toContain('absence records');
+    expect(description).toContain('gbif_count_occurrences');
   });
 
   /** #38 — the resource had the same gap as the tool: a malformed key round-tripped. */

@@ -11,10 +11,10 @@
 | `gbif_search_species` | Search or browse the GBIF backbone taxonomy. Accepts scientific name fragments, rank filters, and higher-taxon constraints. Returns matching species/genera/families with taxonomy, vernacular names, and record counts. | `q`, `rank`, `kingdom`, `family`, `genus`, `isExtinct`, `limit`, `offset` | `readOnlyHint: true` |
 | `gbif_get_species_classification` | Return the full parent chain from kingdom down to the given taxon — each rank as a named node with its own taxon key. Useful for building taxonomic trees or understanding placement without navigating the backbone level-by-level. | `taxonKey` | `readOnlyHint: true` |
 | `gbif_get_species_children` | List direct children of a taxon in the GBIF backbone (e.g., species within a genus, genera within a family). Paginated. | `taxonKey`, `limit`, `offset` | `readOnlyHint: true` |
-| `gbif_search_occurrences` | Search GBIF occurrence records. Primary workflow tool for location + taxon queries. Accepts taxon key (from `gbif_match_species`), country, bounding box, date range, basis of record, and other Darwin Core filters. Returns paginated occurrence records with coordinates, date, dataset, and collector. | `taxonKey`, `scientificName`, `country`, `decimalLatitude`, `decimalLongitude`, `geometry`, `year`, `month`, `basisOfRecord`, `hasCoordinate`, `limit`, `offset` | `readOnlyHint: true` |
-| `gbif_count_occurrences` | Count occurrences matching a taxon + location filter without fetching records. Use for quick totals ("how many Aves records in Sweden?") or before deciding whether to paginate a full search. | `taxonKey`, `country`, `isGeoreferenced` | `readOnlyHint: true` |
+| `gbif_search_occurrences` | Search GBIF occurrence records. Primary workflow tool for location + taxon queries. Accepts taxon key (from `gbif_match_species`), country, bounding box, date range, basis of record, and other Darwin Core filters. Returns paginated occurrence records with coordinates, date, dataset, and collector. Filters to presences by default. | `taxonKey`, `scientificName`, `country`, `decimalLatitude`, `decimalLongitude`, `geometry`, `year`, `month`, `basisOfRecord`, `hasCoordinate`, `occurrenceStatus`, `iucnRedListCategory`, `limit`, `offset` | `readOnlyHint: true` |
+| `gbif_count_occurrences` | Count occurrences matching a taxon + location filter without fetching records. Use for quick totals ("how many Aves records in Sweden?") or before deciding whether to paginate a full search. Applies the same presence/absence default as `gbif_search_occurrences`. | `taxonKey`, `country`, `isGeoreferenced`, `datasetKey`, `year`, `occurrenceStatus`, `iucnRedListCategory` | `readOnlyHint: true` |
 | `gbif_get_occurrence` | Fetch a single occurrence record by GBIF occurrence key — full Darwin Core fields, coordinates, date, collector, media, dataset provenance. | `occurrenceKey` | `readOnlyHint: true` |
-| `gbif_occurrence_facets` | Aggregate occurrence counts across a dimension (country, year, basis of record, dataset, kingdom). Returns one page of facet values ranked by count for a given filter — `facetLimit` entries starting at `facetOffset`. Core tool for distribution analysis and trend queries ("which countries have the most records for this species?", "how has observation volume changed since 2010?"). | `taxonKey`, `country`, `geometry`, `facet`, `facetLimit`, `year`, `basisOfRecord` | `readOnlyHint: true` |
+| `gbif_occurrence_facets` | Aggregate occurrence counts across a dimension (country, year, basis of record, dataset, kingdom). Returns one page of facet values ranked by count for a given filter — `facetLimit` entries starting at `facetOffset`. Core tool for distribution analysis and trend queries ("which countries have the most records for this species?", "how has observation volume changed since 2010?"). | `taxonKey`, `country`, `geometry`, `facet`, `facetLimit`, `facetOffset`, `year`, `basisOfRecord`, `datasetKey`, `occurrenceStatus`, `iucnRedListCategory` | `readOnlyHint: true` |
 | `gbif_search_datasets` | Search GBIF datasets by keyword, type, country, or publishing organization. Returns dataset title, description, license, record count, and DOI. | `q`, `type`, `publishingCountry`, `hostingOrg`, `limit`, `offset` | `readOnlyHint: true` |
 | `gbif_get_dataset` | Fetch a dataset record by key — full metadata including title, description, citation, contacts, license, temporal/geographic coverage, and record count. | `datasetKey`, `contactLimit` | `readOnlyHint: true` |
 | `gbif_search_publishers` | Search organizations (publishers/institutions) that contribute data to GBIF by name or country. Returns organization name, country, and key for chaining into dataset and occurrence queries. | `q`, `country`, `limit`, `offset` | `readOnlyHint: true` |
@@ -219,10 +219,12 @@ Lists direct children of a backbone taxon — genera within a family, species wi
 The core data retrieval tool. Searches 2.4B+ occurrence records with Darwin Core filters. Supports taxon key, country (ISO 3166-1 alpha-2 code), bounding box (decimalLatitude/decimalLongitude range or WKT polygon via `geometry`), year range, month, basis of record, and georeference filter.
 
 **Important nuances:**
-- `taxonKey` is the backbone key from `gbif_match_species`. Passing a raw name as `scientificName` also works but may miss synonyms — the backbone key is preferred.
+- `taxonKey` is the backbone key from `gbif_match_species`. Passing a raw name as `scientificName` also works but may miss synonyms — the backbone key is preferred. GBIF ORs the two rather than intersecting them, so passing both widens the result set instead of narrowing it (`taxonKey=212` alone and `taxonKey=212&scientificName=Puma concolor` differ by exactly the *Puma concolor* total).
 - The occurrence search endpoint does NOT support free-text search against collectors or locality descriptions — use Darwin Core filter params.
 - Pagination is capped: GBIF serves offset+limit up to 100,001 and answers `Max offset of 100001 exceeded` past it. For deeper enumeration, GBIF's asynchronous download API is required (out of scope for this server).
 - WKT geometry accepts POLYGON and MULTIPOLYGON with coordinates as `lon lat` pairs.
+- GBIF returns absence records by default. `occurrenceStatus` defaults to `PRESENT` here instead; `ANY` restores GBIF's behavior, and the applied value is reported in the enrichment either way.
+- `/occurrence/search` silently ignores parameter names it does not recognize, answering 200 with the unfiltered total. A misspelled filter is a wrong answer, not an error.
 
 **Key inputs:**
 
@@ -265,13 +267,14 @@ z.object({
 - `taxonKey`, `scientificName`, `canonicalName`, `rank`
 - `decimalLatitude`, `decimalLongitude`, `coordinateUncertaintyInMeters` (may be absent)
 - `country`, `countryCode`, `stateProvince`, `locality` (may be absent)
-- `eventDate`, `year`, `month`, `day`
-- `basisOfRecord`, `individualCount`
+- `taxonomicStatus` — whether the record was filed under an accepted name or a synonym
+- `eventDate`, `eventTime` (time of day with UTC offset), `year`, `month`, `day`
+- `basisOfRecord`, `occurrenceStatus`, `iucnRedListCategory`, `individualCount`
 - `datasetKey`, `datasetName`, `publishingCountry`
 - `recordedBy` (may be absent)
 - `issues` — array of GBIF quality flags
 
-**Pagination output:** `count` (total matches), `endOfRecords`, `offset`, `limit`, and an enrichment `notice` when the result set is empty or the offset overshot the total.
+**Pagination output:** `count` (total matches), `endOfRecords`, `offset`, `limit`, the applied `occurrenceStatus`, and an enrichment `notice` when the result set is empty, the offset overshot the total, or a presence/absence filter narrowed the result.
 
 **Errors:** `pagination_cap_exceeded` when offset+limit passes 100,001, `invalid_filter` when a datasetKey is not a UUID or GBIF rejects the geometry or a range.
 
@@ -281,11 +284,11 @@ z.object({
 
 ### `gbif_count_occurrences`
 
-Returns a single integer count. Backed by `/occurrence/count` which is lightweight and doesn't paginate. Use before `gbif_search_occurrences` when you only need the total, or to get counts for multiple filters in parallel.
+Returns a single integer count, read from `/occurrence/search` at `limit=0` — no record payload, and the same filter set the search tool accepts. Use before `gbif_search_occurrences` when you only need the total, or to get counts for multiple filters in parallel.
 
-**Key inputs:** `taxonKey`, `country`, `isGeoreferenced`, `datasetKey`, `year`
+**Key inputs:** `taxonKey`, `country`, `isGeoreferenced`, `datasetKey`, `year`, `occurrenceStatus`, `iucnRedListCategory`
 
-**Output:** `count: number`
+**Output:** `count: number`, plus enrichment carrying the applied `occurrenceStatus` and a `notice` when it narrowed the count.
 
 **Annotations:** `readOnlyHint: true`, `openWorldHint: false`
 
@@ -297,7 +300,7 @@ Fetches a full occurrence record by its GBIF key. Returns the complete Darwin Co
 
 **Input:** `occurrenceKey: z.number()`
 
-**Output:** Full record with normalized key fields plus raw `gadm` (GADM administrative divisions), `media` array, and `issues` array.
+**Output:** Full record with normalized key fields plus `gadm` (GADM administrative divisions, levels 0–3), `taxonomicStatus`, `eventTime`, `occurrenceStatus`, `iucnRedListCategory`, `media` array, and `issues` array.
 
 **Errors:** `not_found` when the key doesn't exist.
 
@@ -309,7 +312,7 @@ Fetches a full occurrence record by its GBIF key. Returns the complete Darwin Co
 
 Returns aggregated occurrence counts for a given facet dimension. Backed by the occurrence search endpoint with `limit=0` and `facet=<field>`, so it returns only the facet counts with no record payload — efficient for distribution analysis.
 
-Available facet dimensions: `BASIS_OF_RECORD`, `COUNTRY`, `YEAR`, `DATASET_KEY`, `KINGDOM_KEY`, `PHYLUM_KEY`, `CLASS_KEY`, `ORDER_KEY`, `FAMILY_KEY`, `GENUS_KEY`, `SPECIES_KEY`, `PUBLISHING_COUNTRY`, `PROTOCOL`, `MONTH`.
+Available facet dimensions: `BASIS_OF_RECORD`, `COUNTRY`, `STATE_PROVINCE`, `YEAR`, `DATASET_KEY`, `KINGDOM_KEY`, `PHYLUM_KEY`, `CLASS_KEY`, `ORDER_KEY`, `FAMILY_KEY`, `GENUS_KEY`, `SPECIES_KEY`, `PUBLISHING_COUNTRY`, `MONTH`, `OCCURRENCE_STATUS`, `IUCN_RED_LIST_CATEGORY`.
 
 **Key inputs:**
 
@@ -321,7 +324,9 @@ z.object({
   basisOfRecord: z.enum([...]).optional().describe('Scope to a specific basis of record.'),
   geometry: z.string().optional().describe('WKT polygon to scope the aggregation to a geographic area (e.g., POLYGON((8 47, 9 47, 9 48, 8 48, 8 47))). Coordinates are longitude latitude. Same format as gbif_search_occurrences.'),
   datasetKey: z.string().optional().describe('Scope the aggregation to a single dataset by its GBIF dataset UUID.'),
-  facet: z.enum(['BASIS_OF_RECORD','COUNTRY','YEAR','DATASET_KEY','KINGDOM_KEY','PHYLUM_KEY','CLASS_KEY','ORDER_KEY','FAMILY_KEY','GENUS_KEY','SPECIES_KEY','PUBLISHING_COUNTRY','MONTH']).describe('Dimension to aggregate by.'),
+  occurrenceStatus: z.enum(['PRESENT','ABSENT','ANY']).default('PRESENT').describe('Presence/absence scope. ANY omits the filter upstream.'),
+  iucnRedListCategory: z.enum(['CR','EN','VU','NT','LC','DD','EX','EW','CD']).optional().describe('Scope to one IUCN Red List category.'),
+  facet: z.enum(['BASIS_OF_RECORD','COUNTRY','STATE_PROVINCE','YEAR','DATASET_KEY','KINGDOM_KEY','PHYLUM_KEY','CLASS_KEY','ORDER_KEY','FAMILY_KEY','GENUS_KEY','SPECIES_KEY','PUBLISHING_COUNTRY','MONTH','OCCURRENCE_STATUS','IUCN_RED_LIST_CATEGORY']).describe('Dimension to aggregate by.'),
   facetLimit: z.number().min(1).max(100).default(10).describe('Maximum number of facet values to return (default 10, max 100).'),
 })
 ```
@@ -349,7 +354,7 @@ Searches GBIF datasets. Useful for locating the specific dataset behind a set of
 
 **Key inputs:** `q` (free text), `type` (OCCURRENCE | CHECKLIST | METADATA | SAMPLING_EVENT), `publishingCountry`, `hostingOrg` (organization UUID), `limit` (default 20), `offset`
 
-**Output per dataset:** `key`, `title`, `type`, `recordCount`, `publishingCountry`, `license`, `doi`, brief `description`.
+**Output per dataset:** `key`, `title`, `type`, `recordCount`, `publishingCountry`, `license`, `doi`, brief `description`. `recordCount` is GBIF's own indexed occurrence total and spans every `occurrenceStatus` — see decision 12.
 
 **Annotations:** `readOnlyHint: true`
 
@@ -361,7 +366,7 @@ Full dataset metadata including title, description, citation text, contacts, lic
 
 **Input:** `datasetKey: z.string().uuid()`, `contactLimit` (default 10, max 100; `0` suppresses contact detail while still reporting the count)
 
-**Output:** Full dataset record. `citation.text` is the citable reference. Contacts are capped at `contactLimit`, with `contactsTotal`/`contactsReturned` reporting the full count.
+**Output:** Full dataset record. `citation.text` is the citable reference. Contacts are capped at `contactLimit`, with `contactsTotal`/`contactsReturned` reporting the full count. `recordCount` is fetched separately — the detail endpoint omits it — and spans every `occurrenceStatus`, matching `gbif_search_datasets` rather than `gbif_count_occurrences`; see decision 12.
 
 **Errors:** `not_found` when the UUID doesn't match any dataset.
 
@@ -460,6 +465,16 @@ Typical agent task: "What vertebrate species have been recorded in a 50km radius
 
 **8. Pagination cap enforced before the request.** GBIF rejects offset+limit past 100,001 with a deterministic 400, which would otherwise burn the whole retry budget. The handler checks the sum first and fails with `pagination_cap_exceeded`, naming the boundary and pointing at `gbif_occurrence_facets` for aggregate counts.
 
+**9. Presence/absence filtering defaults to `PRESENT` across every occurrence query tool.** A GBIF `ABSENT` record documents a survey that looked for a taxon and did not find it, yet it arrives with coordinates, a date, and a recorder — indistinguishable from a sighting. GBIF returns both by default, and for absence-heavy taxa the mix dominates: *Radicipes gracilis* (`taxonKey` 2263005) has 2,351,582 indexed records, 79 of them presences. `gbif_search_occurrences`, `gbif_count_occurrences`, and `gbif_occurrence_facets` therefore all default to `PRESENT` so they answer the question a caller actually asked and agree with each other on the same filters. The default is never silent: each tool reports the applied `occurrenceStatus` in its enrichment and emits a notice naming the opt-out. `ANY` is a server-side sentinel, not a GBIF term — it resolves to an omitted parameter, since GBIF's vocabulary is only `PRESENT` and `ABSENT` and rejects anything else with a 400.
+
+**10. `gbif_count_occurrences` reads its total from `/occurrence/search?limit=0`, not `/occurrence/count`.** The dedicated count endpoint accepts a closed parameter set and answers `Invalid parameter name` for both `occurrenceStatus` and `iucnRedListCategory`, so decision 9 is unreachable through it and the count tool would contradict the search tool on the same question. The two report the same total, and where they diverge `/occurrence/count` is the stale side: its responses are edge-cached at `max-age=600` and served well past it, so an entry hours old trails the search figure by a few thousand records and matches exactly once it refreshes. Search is also self-consistent, its own `OCCURRENCE_STATUS` facet counts summing to its total. One parameter does not carry over: `/occurrence/search` has no `isGeoreferenced` and silently ignores it rather than rejecting it, so the service maps it to `hasCoordinate`, which returns identical figures in both directions. `/occurrence/count` is still used for the supplementary dataset record count, where no such filter applies.
+
+**11. IUCN Red List categories are a closed enum of the nine GBIF actually indexes.** GBIF answers an unrecognized `iucnRedListCategory` with HTTP 200 and a count of zero rather than an error, so an unvalidated string produces a confident empty result. The enum is taken from an unscoped `facet=IUCN_RED_LIST_CATEGORY` over the whole index: `CR`, `EN`, `VU`, `NT`, `LC`, `DD`, `EX`, `EW`, `CD`. `NE` (Not Evaluated) is deliberately excluded — it matches no record, so offering it would only produce that silent zero.
+
+**12. Dataset `recordCount` stays unfiltered and says so, rather than being narrowed to match decision 9.** It is GBIF's own figure for its own dataset — `/dataset/search` publishes it, and re-scoping it to presences would make `gbif_get_dataset` and the `gbif://dataset/{datasetKey}` resource disagree with both `gbif_search_datasets` and gbif.org, trading one inconsistency for a worse one. Surfacing a second presence-scoped figure alongside it is no better: `gbif_search_datasets` returns up to 1,000 datasets per page and cannot afford a per-dataset count call, so only the detail surfaces could carry it and the list surface would be the odd one out. What was actually missing is the scope label. Every surface carrying the figure — both dataset tools, the resource, and the server `instructions` — now states that it spans every `occurrenceStatus` and names `gbif_count_occurrences` as the presence-scoped alternative, in the field description *and* in the rendered `content[]` text, since a `content[]`-only client never reads an output schema. The gap is not hypothetical: dataset `b6b4502f-ffc8-4048-a91b-af502288faa8` reports 30,622,351 records against 61,357 presences, a factor of 499.
+
+The same pass dropped the `type === 'OCCURRENCE'` condition on the supplementary lookup. `/dataset/search` reports `recordCount` for all four dataset types, and `SAMPLING_EVENT` and `METADATA` datasets carry indexed occurrences in the tens of millions — including that same `b6b4502f` dataset, a `SAMPLING_EVENT`. Gating on `type` left the detail surfaces silent on exactly the datasets the list surface counts, which contradicted their own claim to match it; a `CHECKLIST` now resolves to 0, which is what search reports for it.
+
 ---
 
 ## Known Limitations
@@ -490,7 +505,7 @@ Typical agent task: "What vertebrate species have been recorded in a 50km radius
 | Species children | `GET /species/{key}/children` | paginated |
 | Species parents | `GET /species/{key}/parents` | returns array root→leaf |
 | Occurrence search | `GET /occurrence/search` | Darwin Core filters + facets |
-| Occurrence count | `GET /occurrence/count` | taxonKey, country, isGeoreferenced |
+| Occurrence count | `GET /occurrence/search` at `limit=0` | full Darwin Core filter set; `/occurrence/count` is used only for the dataset record-count lookup, since its closed parameter set rejects `occurrenceStatus` and `iucnRedListCategory` |
 | Occurrence get | `GET /occurrence/{key}` | full DwC record |
 | Dataset search | `GET /dataset/search` | q, type, publishingCountry |
 | Dataset get | `GET /dataset/{uuid}` | |

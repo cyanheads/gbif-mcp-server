@@ -79,7 +79,12 @@ export const gbifSearchDatasets = tool('gbif_search_datasets', {
             license: z.string().optional().describe('License identifier. May be absent.'),
             doi: z.string().optional().describe('DOI for citation. May be absent.'),
             publishingCountry: z.string().optional().describe('Country code of the publisher.'),
-            recordCount: z.number().optional().describe('Number of records in the dataset.'),
+            recordCount: z
+              .number()
+              .optional()
+              .describe(
+                'Occurrence records GBIF has indexed for this dataset, spanning every occurrenceStatus: absence records — surveys that looked for a taxon and did not find it — are counted alongside sightings, and on some datasets they are the overwhelming majority. For the sightings-only figure, call gbif_count_occurrences with this key; it defaults to occurrenceStatus PRESENT, so the two figures are expected to differ rather than one being wrong.',
+              ),
           })
           .describe('A GBIF dataset with key, title, type, license, and record count.'),
       )
@@ -161,6 +166,16 @@ export const gbifSearchDatasets = tool('gbif_search_datasets', {
 
   format: (result) => {
     const lines: string[] = [`**Results:** ${result.datasets.length}`];
+    /**
+     * Stated once per page rather than per row, and only when a figure is
+     * actually rendered. A `content[]`-only client never reads the field's
+     * description, so without this the per-dataset totals arrive unscoped.
+     */
+    if (result.datasets.some((ds) => ds.recordCount != null)) {
+      lines.push(
+        'Record counts span every occurrenceStatus, absences included. gbif_count_occurrences with a dataset key counts sightings only by default.',
+      );
+    }
     for (const ds of result.datasets) {
       lines.push(`\n## ${ds.title ?? 'Untitled dataset'}`);
       if (ds.key) lines.push(`**Key:** ${ds.key}`);

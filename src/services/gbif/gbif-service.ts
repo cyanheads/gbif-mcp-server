@@ -10,6 +10,8 @@ import type { StorageService } from '@cyanheads/mcp-ts-core/storage';
 import { httpErrorFromResponse, withRetry } from '@cyanheads/mcp-ts-core/utils';
 import type {
   BasisOfRecord,
+  IucnRedListCategory,
+  OccurrenceStatus,
   RawChildrenResponse,
   RawDatasetRecord,
   RawDatasetSearchResponse,
@@ -280,6 +282,8 @@ export class GbifService {
       isInCluster?: boolean;
       coordinateUncertaintyInMeters?: string;
       datasetKey?: string;
+      occurrenceStatus?: OccurrenceStatus;
+      iucnRedListCategory?: IucnRedListCategory;
       limit?: number;
       offset?: number;
     },
@@ -300,6 +304,8 @@ export class GbifService {
     if (params.coordinateUncertaintyInMeters)
       queryParams.coordinateUncertaintyInMeters = params.coordinateUncertaintyInMeters;
     if (params.datasetKey) queryParams.datasetKey = params.datasetKey;
+    if (params.occurrenceStatus) queryParams.occurrenceStatus = params.occurrenceStatus;
+    if (params.iucnRedListCategory) queryParams.iucnRedListCategory = params.iucnRedListCategory;
     if (params.limit !== undefined) queryParams.limit = params.limit;
     if (params.offset !== undefined) queryParams.offset = params.offset;
     const url = this.buildUrl('/occurrence/search', queryParams);
@@ -307,25 +313,52 @@ export class GbifService {
     return this.getJson<RawOccurrenceSearchResponse>(url, ctx);
   }
 
-  countOccurrences(
+  /**
+   * Total occurrences matching a filter, read from `/occurrence/search?limit=0`
+   * rather than `/occurrence/count`.
+   *
+   * `/occurrence/count` accepts a closed, undocumented parameter set — it
+   * answers `Invalid parameter name` for `occurrenceStatus` and
+   * `iucnRedListCategory`, so the presence/absence default this server applies
+   * to occurrence queries is unreachable through it and the count tool would
+   * contradict the search tool on the same question. The search endpoint takes
+   * the full filter set and reports the same total. Where the two differ,
+   * `/occurrence/count` is the stale side: its responses are edge-cached at
+   * `max-age=600` and served well past it, so an entry hours old trails search
+   * by a few thousand records until it refreshes, then matches exactly. Search
+   * is also self-consistent — its own `OCCURRENCE_STATUS` facet counts sum to
+   * its total.
+   *
+   * `isGeoreferenced` is the one parameter that does not carry over: the search
+   * endpoint has no such name and **silently ignores it**, returning the
+   * unfiltered total. Its equivalent there is `hasCoordinate`, which returns
+   * identical figures in both directions, so the mapping happens here — the
+   * caller keeps asking in the vocabulary `/occurrence/count` used.
+   */
+  async countOccurrences(
     params: {
       taxonKey?: number;
       country?: string;
       isGeoreferenced?: boolean;
       datasetKey?: string;
       year?: string;
+      occurrenceStatus?: OccurrenceStatus;
+      iucnRedListCategory?: IucnRedListCategory;
     },
     ctx: Context,
   ): Promise<number> {
-    const queryParams: Record<string, unknown> = {};
+    const queryParams: Record<string, unknown> = { limit: 0 };
     if (params.taxonKey !== undefined) queryParams.taxonKey = params.taxonKey;
     if (params.country) queryParams.country = params.country;
-    if (params.isGeoreferenced !== undefined) queryParams.isGeoreferenced = params.isGeoreferenced;
+    if (params.isGeoreferenced !== undefined) queryParams.hasCoordinate = params.isGeoreferenced;
     if (params.datasetKey) queryParams.datasetKey = params.datasetKey;
     if (params.year) queryParams.year = params.year;
-    const url = this.buildUrl('/occurrence/count', queryParams);
+    if (params.occurrenceStatus) queryParams.occurrenceStatus = params.occurrenceStatus;
+    if (params.iucnRedListCategory) queryParams.iucnRedListCategory = params.iucnRedListCategory;
+    const url = this.buildUrl('/occurrence/search', queryParams);
     ctx.log.debug('Counting occurrences', { taxonKey: params.taxonKey });
-    return this.getJson<number>(url, ctx);
+    const raw = await this.getJson<RawOccurrenceSearchResponse>(url, ctx);
+    return raw.count ?? 0;
   }
 
   getOccurrence(occurrenceKey: number, ctx: Context): Promise<RawOccurrenceRecord> {
@@ -342,6 +375,8 @@ export class GbifService {
       basisOfRecord?: BasisOfRecord;
       geometry?: string;
       datasetKey?: string;
+      occurrenceStatus?: OccurrenceStatus;
+      iucnRedListCategory?: IucnRedListCategory;
       facet: string;
       facetLimit?: number;
       facetOffset?: number;
@@ -355,6 +390,8 @@ export class GbifService {
     if (params.basisOfRecord) queryParams.basisOfRecord = params.basisOfRecord;
     if (params.geometry) queryParams.geometry = params.geometry;
     if (params.datasetKey) queryParams.datasetKey = params.datasetKey;
+    if (params.occurrenceStatus) queryParams.occurrenceStatus = params.occurrenceStatus;
+    if (params.iucnRedListCategory) queryParams.iucnRedListCategory = params.iucnRedListCategory;
     if (params.facetLimit !== undefined) queryParams.facetLimit = params.facetLimit;
     if (params.facetOffset !== undefined) queryParams.facetOffset = params.facetOffset;
     const url = this.buildUrl('/occurrence/search', queryParams);
@@ -397,6 +434,11 @@ export class GbifService {
    * Indexed occurrence count for one dataset — the record count `/dataset/{key}`
    * never supplies but `/dataset/search` does, so a detail lookup can report the
    * same figure the list tool reports.
+   *
+   * Deliberately unfiltered: `/dataset/search` counts every indexed record for a
+   * dataset, absences included, so this must too or the two would disagree. The
+   * presence-scoped figure is a different question, answered by `countOccurrences`
+   * against a different endpoint.
    *
    * Supplementary to the dataset record already in hand, so it is bounded (no
    * retries, short deadline) and degrades to `undefined` on any failure instead

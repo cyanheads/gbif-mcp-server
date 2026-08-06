@@ -24,23 +24,30 @@ const gadmLevel = () =>
 const compactLevel = (l: RawGadmLevel | undefined) =>
   l && (l.gid || l.name) ? { gid: l.gid, name: l.name } : undefined;
 
-/** Project the raw GADM object to gid/name at levels 0–2; undefined when no level carries data. */
+/**
+ * Project the raw GADM object to gid/name at levels 0–3; undefined when no level
+ * carries data. Level 3 is the finest GBIF's occurrence index carries, and only
+ * where a country subdivides that far — Sweden stops at level 2, South Africa
+ * reaches the municipality.
+ */
 const compactGadm = (g: RawGadm | undefined) => {
   if (!g) return;
   const level0 = compactLevel(g.level0);
   const level1 = compactLevel(g.level1);
   const level2 = compactLevel(g.level2);
-  if (!level0 && !level1 && !level2) return;
-  return { level0, level1, level2 };
+  const level3 = compactLevel(g.level3);
+  if (!level0 && !level1 && !level2 && !level3) return;
+  return { level0, level1, level2, level3 };
 };
 
 export const gbifGetOccurrence = tool('gbif_get_occurrence', {
   title: 'Get Occurrence Record',
   description:
     'Fetch a single occurrence record by its GBIF occurrence key. Returns the complete Darwin Core ' +
-    'record — all coordinates, administrative geography (GADM), dates, collections metadata, ' +
-    'collector identifiers, media links, and quality issue flags. Use the occurrence key from ' +
-    'gbif_search_occurrences results to fetch full detail.',
+    'record — all coordinates, administrative geography (GADM levels 0–3), dates, collections metadata, ' +
+    'collector identifiers, conservation status, media links, and quality issue flags. Check ' +
+    'occurrenceStatus before reading the record as a sighting: ABSENT means a survey looked for the ' +
+    'taxon and did not find it. Use the occurrence key from gbif_search_occurrences results.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     occurrenceKey: z.number().describe('GBIF occurrence key from gbif_search_occurrences results.'),
@@ -66,6 +73,12 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
     genus: z.string().optional().describe('Genus classification.'),
     species: z.string().optional().describe('Species canonical name.'),
     taxonRank: z.string().optional().describe('Taxonomic rank of the identified taxon.'),
+    taxonomicStatus: z
+      .string()
+      .optional()
+      .describe(
+        'Status of the identification carried on this record — ACCEPTED, PROVISIONALLY_ACCEPTED, SYNONYM, DOUBTFUL, and so on. Says whether the occurrence was filed under an accepted name or a synonym. May be absent.',
+      ),
     decimalLatitude: z
       .number()
       .optional()
@@ -88,10 +101,15 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
         level0: gadmLevel().optional().describe('GADM level 0 — country. May be absent.'),
         level1: gadmLevel().optional().describe('GADM level 1 — state/province. May be absent.'),
         level2: gadmLevel().optional().describe('GADM level 2 — county/district. May be absent.'),
+        level3: gadmLevel()
+          .optional()
+          .describe(
+            'GADM level 3 — municipality/ward, the finest level GBIF indexes. Absent where the country does not subdivide that far.',
+          ),
       })
       .optional()
       .describe(
-        'GADM administrative geography — stable GIDs and names at levels 0–2. May be absent.',
+        'GADM administrative geography — stable GIDs and names at levels 0–3. May be absent.',
       ),
     publishingCountry: z
       .string()
@@ -101,10 +119,28 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
       .string()
       .optional()
       .describe('Observation date as ISO 8601 string. May be absent.'),
+    eventTime: z
+      .string()
+      .optional()
+      .describe(
+        'Time of day of the observation, with seconds and UTC offset (e.g. 20:15:00+01:00) — the offset eventDate omits when it carries a local time. May be absent.',
+      ),
     year: z.number().optional().describe('Observation year. May be absent.'),
     month: z.number().optional().describe('Observation month (1–12). May be absent.'),
     day: z.number().optional().describe('Observation day. May be absent.'),
     basisOfRecord: z.string().optional().describe('How the occurrence was recorded.'),
+    occurrenceStatus: z
+      .string()
+      .optional()
+      .describe(
+        'PRESENT when the record asserts the taxon was there, ABSENT when it documents a survey that looked and did not find it. An ABSENT record is not a sighting — it carries coordinates, a date, and a recorder all the same. May be absent.',
+      ),
+    iucnRedListCategory: z
+      .string()
+      .optional()
+      .describe(
+        'IUCN Red List category of the taxon — CR Critically Endangered, EN Endangered, VU Vulnerable, NT Near Threatened, LC Least Concern, DD Data Deficient, EX Extinct, EW Extinct in the Wild, CD Conservation Dependent. May be absent.',
+      ),
     institutionCode: z
       .string()
       .optional()
@@ -205,6 +241,7 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
       genus: raw.genus,
       species: raw.species,
       taxonRank: raw.taxonRank,
+      taxonomicStatus: raw.taxonomicStatus,
       decimalLatitude: raw.decimalLatitude,
       decimalLongitude: raw.decimalLongitude,
       coordinateUncertaintyInMeters: raw.coordinateUncertaintyInMeters,
@@ -216,10 +253,13 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
       gadm: compactGadm(raw.gadm),
       publishingCountry: raw.publishingCountry,
       eventDate: raw.eventDate,
+      eventTime: raw.eventTime,
       year: raw.year,
       month: raw.month,
       day: raw.day,
       basisOfRecord: raw.basisOfRecord,
+      occurrenceStatus: raw.occurrenceStatus,
+      iucnRedListCategory: raw.iucnRedListCategory,
       institutionCode: raw.institutionCode,
       collectionCode: raw.collectionCode,
       catalogNumber: raw.catalogNumber,
@@ -255,7 +295,16 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
     if (result.key != null) lines.push(`**Occurrence key:** ${result.key}`);
     if (result.taxonKey != null) lines.push(`**Taxon key:** ${result.taxonKey}`);
     if (result.taxonRank) lines.push(`**Rank:** ${result.taxonRank}`);
+    if (result.taxonomicStatus) lines.push(`**Taxonomic status:** ${result.taxonomicStatus}`);
     if (result.basisOfRecord) lines.push(`**Basis of record:** ${result.basisOfRecord}`);
+    /**
+     * Rendered whenever GBIF supplies it, PRESENT included. An absence record is
+     * otherwise indistinguishable from a sighting for a `content[]`-only client,
+     * which has no `structuredContent` to fall back on.
+     */
+    if (result.occurrenceStatus) lines.push(`**Occurrence status:** ${result.occurrenceStatus}`);
+    if (result.iucnRedListCategory)
+      lines.push(`**IUCN Red List category:** ${result.iucnRedListCategory}`);
     // Taxonomy
     const taxParts: string[] = [];
     if (result.kingdom) taxParts.push(`Kingdom: ${result.kingdom}`);
@@ -276,6 +325,7 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
     } else if (result.year == null) {
       lines.push('**Date:** Not available');
     }
+    if (result.eventTime) lines.push(`**Time:** ${result.eventTime}`);
     if (result.year != null) lines.push(`**Year:** ${result.year}`);
     if (result.month != null) lines.push(`**Month:** ${result.month}`);
     if (result.day != null) lines.push(`**Day:** ${result.day}`);
@@ -298,7 +348,12 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
     else if (result.countryCode) lines.push(`**Country code:** ${result.countryCode}`);
     if (result.gadm) {
       const gadmParts: string[] = [];
-      for (const lvl of [result.gadm.level0, result.gadm.level1, result.gadm.level2]) {
+      for (const lvl of [
+        result.gadm.level0,
+        result.gadm.level1,
+        result.gadm.level2,
+        result.gadm.level3,
+      ]) {
         if (lvl?.name || lvl?.gid) {
           gadmParts.push(`${lvl.name ?? ''}${lvl.gid ? ` (${lvl.gid})` : ''}`.trim());
         }

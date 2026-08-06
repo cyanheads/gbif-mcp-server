@@ -57,7 +57,7 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
       .number()
       .optional()
       .describe(
-        'Occurrence records GBIF has indexed for this dataset, matching the figure gbif_search_datasets reports. Fetched separately for OCCURRENCE datasets because the detail endpoint omits it; absent for other dataset types and when that lookup does not return in time.',
+        'Occurrence records GBIF has indexed for this dataset, matching the figure gbif_search_datasets reports. Spans every occurrenceStatus: absence records — surveys that looked for a taxon and did not find it — are counted alongside sightings, and on some datasets they are the overwhelming majority. gbif_count_occurrences with this datasetKey answers the other question, defaulting to occurrenceStatus PRESENT, so the two figures are expected to differ rather than one being wrong. Fetched separately because the detail endpoint omits it; absent when that lookup does not return in time.',
       ),
     numConstituents: z
       .number()
@@ -201,8 +201,16 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
     if (result.license) lines.push(`**License:** ${result.license}`);
     if (result.doi) lines.push(`**DOI:** ${result.doi}`);
     if (result.publishingCountry) lines.push(`**Publishing country:** ${result.publishingCountry}`);
+    /**
+     * The scope qualifier is rendered inline rather than left to the output
+     * schema: a `content[]`-only client never reads the field's description, and
+     * a bare figure five orders of magnitude above the sightings for the same key
+     * is exactly what reads as a data error.
+     */
     if (result.recordCount != null)
-      lines.push(`**Records:** ${result.recordCount.toLocaleString()}`);
+      lines.push(
+        `**Records:** ${result.recordCount.toLocaleString()} — every indexed occurrence record, absences included. gbif_count_occurrences with this key counts sightings only by default.`,
+      );
     if (result.numConstituents != null)
       lines.push(`**Constituent datasets:** ${result.numConstituents}`);
     if (result.temporalCoverages?.length) {

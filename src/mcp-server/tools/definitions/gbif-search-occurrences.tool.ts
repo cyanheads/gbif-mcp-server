@@ -6,7 +6,8 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
-import { isGbifUuid } from '../utils.js';
+import { IUCN_RED_LIST_CATEGORY_VALUES, OCCURRENCE_STATUS_VALUES } from '@/services/gbif/types.js';
+import { isGbifUuid, occurrenceStatusNotice } from '../utils.js';
 
 /** Empty-result and pagination-overshoot guidance. */
 function buildNotice(args: {
@@ -38,7 +39,9 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
     'Search 2.4B+ GBIF occurrence records with Darwin Core filters. Use taxonKey from gbif_match_species ' +
     'for reliable results — it resolves synonyms automatically. Accepts country (ISO 3166-1 alpha-2), ' +
     'bounding box (decimalLatitude/decimalLongitude ranges), WKT polygon geometry, year range, month, ' +
-    'basis of record, coordinate filter, and dataset key. Pagination is capped at offset+limit=100,001 — ' +
+    'basis of record, coordinate filter, and dataset key. Returns sightings only by default — GBIF also ' +
+    'indexes absence records (surveys that looked and found nothing), and occurrenceStatus controls ' +
+    'whether they are included. Pagination is capped at offset+limit=100,001 — ' +
     'use gbif_occurrence_facets for aggregate counts across large result sets.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
@@ -52,7 +55,7 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       .string()
       .optional()
       .describe(
-        'Scientific name filter. Less precise than taxonKey — does not match synonyms. Use taxonKey from gbif_match_species for reliable results.',
+        'Scientific name filter. Less precise than taxonKey — does not match synonyms. Use taxonKey from gbif_match_species for reliable results. Supplying both does not narrow the search: GBIF combines the two taxon filters with OR, so the result is the union of the two, not their intersection.',
       ),
     country: z
       .string()
@@ -129,6 +132,18 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       .describe(
         'Restrict results to a single dataset by its GBIF dataset UUID (8-4-4-4-12 hex). Obtain one from gbif_search_datasets, gbif_get_dataset, a DATASET_KEY facet (gbif_occurrence_facets), or the datasetKey field on an occurrence record.',
       ),
+    occurrenceStatus: z
+      .enum(OCCURRENCE_STATUS_VALUES)
+      .default('PRESENT')
+      .describe(
+        "Presence/absence filter. Defaults to PRESENT: an ABSENT record documents a survey that looked for the taxon and did not find it, so including one would read as a sighting of the opposite. Use ANY for both (GBIF's own default), or ABSENT for non-observations alone.",
+      ),
+    iucnRedListCategory: z
+      .enum(IUCN_RED_LIST_CATEGORY_VALUES)
+      .optional()
+      .describe(
+        'Restrict to records whose taxon carries this IUCN Red List category: CR Critically Endangered, EN Endangered, VU Vulnerable, NT Near Threatened, LC Least Concern, DD Data Deficient, EX Extinct, EW Extinct in the Wild, CD Conservation Dependent. Records with no category are excluded when this is set.',
+      ),
     limit: z
       .number()
       .min(1)
@@ -159,6 +174,12 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
               .describe('Scientific name from occurrence record.'),
             canonicalName: z.string().optional().describe('Canonical name without authorship.'),
             rank: z.string().optional().describe('Taxonomic rank of the identified taxon.'),
+            taxonomicStatus: z
+              .string()
+              .optional()
+              .describe(
+                'Status of the identification carried on this record — ACCEPTED, PROVISIONALLY_ACCEPTED, SYNONYM, DOUBTFUL, and so on. Says whether the occurrence was filed under an accepted name or a synonym. May be absent.',
+              ),
             decimalLatitude: z
               .number()
               .optional()
@@ -182,10 +203,28 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
               .string()
               .optional()
               .describe('Observation date as ISO 8601 string. May be absent.'),
+            eventTime: z
+              .string()
+              .optional()
+              .describe(
+                'Time of day of the observation, with seconds and UTC offset (e.g. 20:15:00+01:00) — the offset eventDate omits when it carries a local time. May be absent.',
+              ),
             year: z.number().optional().describe('Observation year. May be absent.'),
             month: z.number().optional().describe('Observation month (1–12). May be absent.'),
             day: z.number().optional().describe('Observation day. May be absent.'),
             basisOfRecord: z.string().optional().describe('How the occurrence was recorded.'),
+            occurrenceStatus: z
+              .string()
+              .optional()
+              .describe(
+                'PRESENT when the record asserts the taxon was there, ABSENT when it documents a survey that looked and did not find it. An ABSENT record is not a sighting. May be absent.',
+              ),
+            iucnRedListCategory: z
+              .string()
+              .optional()
+              .describe(
+                'IUCN Red List category of the taxon — CR, EN, VU, NT, LC, DD, EX, EW, or CD. May be absent.',
+              ),
             individualCount: z
               .number()
               .optional()
@@ -218,11 +257,16 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
     offset: z.number().describe('Current pagination offset.'),
     limit: z.number().describe('Records returned in this page.'),
     endOfRecords: z.boolean().describe('True when there are no more results after this page.'),
+    occurrenceStatus: z
+      .string()
+      .describe(
+        'The presence/absence filter applied upstream — PRESENT, ABSENT, or ANY when no filter was sent. Says what totalCount and the returned records cover.',
+      ),
     notice: z
       .string()
       .optional()
       .describe(
-        'Guidance when results are empty or paging overshot. Absent on successful result pages.',
+        'Guidance when results are empty, paging overshot, or a presence/absence filter narrowed the result. Absent only when none applies.',
       ),
   },
 
@@ -284,6 +328,8 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
           coordinateUncertaintyInMeters: input.coordinateUncertaintyInMeters,
         }),
         ...(input.datasetKey?.trim() && { datasetKey: input.datasetKey }),
+        ...(input.occurrenceStatus !== 'ANY' && { occurrenceStatus: input.occurrenceStatus }),
+        ...(input.iucnRedListCategory && { iucnRedListCategory: input.iucnRedListCategory }),
         limit: input.limit,
         offset: input.offset,
       },
@@ -296,6 +342,7 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       scientificName: r.scientificName,
       canonicalName: r.canonicalName,
       rank: r.taxonRank,
+      taxonomicStatus: r.taxonomicStatus,
       decimalLatitude: r.decimalLatitude,
       decimalLongitude: r.decimalLongitude,
       coordinateUncertaintyInMeters: r.coordinateUncertaintyInMeters,
@@ -304,10 +351,13 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       stateProvince: r.stateProvince,
       locality: r.locality,
       eventDate: r.eventDate,
+      eventTime: r.eventTime,
       year: r.year,
       month: r.month,
       day: r.day,
       basisOfRecord: r.basisOfRecord,
+      occurrenceStatus: r.occurrenceStatus,
+      iucnRedListCategory: r.iucnRedListCategory,
       individualCount: r.individualCount,
       datasetKey: r.datasetKey,
       datasetName: r.datasetName,
@@ -321,8 +371,19 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
     const limit = raw.limit ?? input.limit;
     const endOfRecords = raw.endOfRecords ?? true;
 
-    ctx.enrich({ totalCount, offset, limit, endOfRecords });
-    const notice = buildNotice({ totalCount, occurrenceCount: occurrences.length, offset });
+    ctx.enrich({
+      totalCount,
+      offset,
+      limit,
+      endOfRecords,
+      occurrenceStatus: input.occurrenceStatus,
+    });
+    const notice = [
+      buildNotice({ totalCount, occurrenceCount: occurrences.length, offset }),
+      occurrenceStatusNotice(input.occurrenceStatus),
+    ]
+      .filter(Boolean)
+      .join(' ');
     if (notice) ctx.enrich.notice(notice);
 
     return { occurrences };
@@ -338,10 +399,20 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       if (occ.key != null) lines.push(`**Occurrence key:** ${occ.key}`);
       if (occ.taxonKey != null) lines.push(`**Taxon key:** ${occ.taxonKey}`);
       if (occ.rank) lines.push(`**Rank:** ${occ.rank}`);
+      if (occ.taxonomicStatus) lines.push(`**Taxonomic status:** ${occ.taxonomicStatus}`);
       if (occ.basisOfRecord) lines.push(`**Basis of record:** ${occ.basisOfRecord}`);
+      /**
+       * Rendered for every record that carries it, PRESENT included. An absence
+       * is only distinguishable from a sighting if the status is on the record
+       * itself — a `content[]`-only client has no other place to read it.
+       */
+      if (occ.occurrenceStatus) lines.push(`**Occurrence status:** ${occ.occurrenceStatus}`);
+      if (occ.iucnRedListCategory)
+        lines.push(`**IUCN Red List category:** ${occ.iucnRedListCategory}`);
       if (occ.eventDate) {
         lines.push(`**Date:** ${occ.eventDate}`);
       }
+      if (occ.eventTime) lines.push(`**Time:** ${occ.eventTime}`);
       if (occ.year != null) lines.push(`**Year:** ${occ.year}`);
       if (occ.month != null) lines.push(`**Month:** ${occ.month}`);
       if (occ.day != null) lines.push(`**Day:** ${occ.day}`);

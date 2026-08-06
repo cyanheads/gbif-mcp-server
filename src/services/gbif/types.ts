@@ -147,6 +147,42 @@ export type BasisOfRecord =
   | 'OCCURRENCE'
   | 'LITERATURE';
 
+/** GBIF's own `OccurrenceStatus` vocabulary — the only two terms the API accepts. */
+export type OccurrenceStatus = 'PRESENT' | 'ABSENT';
+
+/**
+ * Presence/absence filter the occurrence tools accept.
+ *
+ * GBIF has no upstream term meaning "either", so `ANY` is this server's
+ * sentinel for one: a tool resolves it by omitting the parameter rather than
+ * sending a value GBIF would reject (`/occurrence/search` answers HTTP 400
+ * `Cannot parse … into a known OccurrenceStatus` for anything outside the pair).
+ */
+export const OCCURRENCE_STATUS_VALUES = ['PRESENT', 'ABSENT', 'ANY'] as const;
+
+export type OccurrenceStatusFilter = (typeof OCCURRENCE_STATUS_VALUES)[number];
+
+/**
+ * IUCN Red List categories GBIF's occurrence index actually carries, taken from
+ * an unscoped `facet=IUCN_RED_LIST_CATEGORY` over the whole index. `NE` (Not
+ * Evaluated) is deliberately absent — it matches zero records, and an
+ * unrecognized value is answered with HTTP 200 and a count of zero rather than
+ * an error, so offering it would return a confident empty result.
+ */
+export const IUCN_RED_LIST_CATEGORY_VALUES = [
+  'CR',
+  'EN',
+  'VU',
+  'NT',
+  'LC',
+  'DD',
+  'EX',
+  'EW',
+  'CD',
+] as const;
+
+export type IucnRedListCategory = (typeof IUCN_RED_LIST_CATEGORY_VALUES)[number];
+
 /** Raw occurrence record from /occurrence/search or /occurrence/{key} */
 export type RawOccurrenceRecord = {
   key?: number;
@@ -192,6 +228,7 @@ export type RawOccurrenceRecord = {
   month?: number;
   day?: number;
   basisOfRecord?: string;
+  occurrenceStatus?: string;
   institutionCode?: string;
   collectionCode?: string;
   catalogNumber?: string;
@@ -216,11 +253,12 @@ export type RawGadmLevel = {
   name?: string;
 };
 
-/** GADM administrative geography nested on an occurrence (levels 0–2 used). */
+/** GADM administrative geography nested on an occurrence. GBIF's index stops at level3. */
 export type RawGadm = {
   level0?: RawGadmLevel;
   level1?: RawGadmLevel;
   level2?: RawGadmLevel;
+  level3?: RawGadmLevel;
 };
 
 export type RawMedia = {
