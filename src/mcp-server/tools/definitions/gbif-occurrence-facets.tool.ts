@@ -7,7 +7,12 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 import { IUCN_RED_LIST_CATEGORY_VALUES, OCCURRENCE_STATUS_VALUES } from '@/services/gbif/types.js';
-import { isGbifUuid, occurrenceStatusNotice, stateProvinceNoMatchNotice } from '../utils.js';
+import {
+  firstBlankFilter,
+  isGbifUuid,
+  occurrenceStatusNotice,
+  stateProvinceNoMatchNotice,
+} from '../utils.js';
 
 const BASIS_OF_RECORD_VALUES = [
   'HUMAN_OBSERVATION',
@@ -92,13 +97,13 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
       .string()
       .optional()
       .describe(
-        'State, province, or first-level administrative division, matched as a verbatim string — exact and case-sensitive. Pass back a value this tool returned under facet STATE_PROVINCE rather than a guessed one: GBIF stores what each dataset recorded without normalizing it, so "England", "England - Greater London", and "Greater London" are three distinct values, "england" is none of them, and an unmatched value aggregates zero records rather than erroring.',
+        'State, province, or first-level administrative division, matched as a verbatim string — exact and case-sensitive. Pass back a value this tool returned under facet STATE_PROVINCE rather than a guessed one: GBIF stores what each dataset recorded without normalizing it, so "England", "England - Greater London", and "Greater London" are three distinct values, "england" is none of them, and an unmatched value aggregates zero records rather than erroring. Omit the field to aggregate across every state or province — a blank or whitespace-only value is rejected rather than dropped, because GBIF answers one with the unfiltered aggregation.',
       ),
     year: z
       .string()
       .optional()
       .describe(
-        'Year or year range (e.g., "2020,2024") to scope the aggregation. Both endpoints inclusive.',
+        'Year or year range (e.g., "2020,2024") to scope the aggregation. Both endpoints inclusive. Omit the field to aggregate across every year — a blank or whitespace-only value is rejected rather than dropped, because GBIF answers one with the unfiltered aggregation.',
       ),
     basisOfRecord: z
       .enum(BASIS_OF_RECORD_VALUES)
@@ -108,13 +113,13 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
       .string()
       .optional()
       .describe(
-        'WKT polygon to scope the aggregation to a geographic area (e.g., POLYGON((8 47, 9 47, 9 48, 8 48, 8 47))). Coordinates are longitude latitude.',
+        'WKT polygon to scope the aggregation to a geographic area (e.g., POLYGON((8 47, 9 47, 9 48, 8 48, 8 47))). Coordinates are longitude latitude. Omit the field to aggregate everywhere — a blank or whitespace-only value is rejected rather than dropped, because GBIF answers one with the unfiltered aggregation.',
       ),
     datasetKey: z
       .string()
       .optional()
       .describe(
-        'Scope the aggregation to a single dataset by its GBIF dataset UUID (8-4-4-4-12 hex). Obtain one from gbif_search_datasets, gbif_get_dataset, a DATASET_KEY facet, or the datasetKey field on an occurrence record.',
+        'Scope the aggregation to a single dataset by its GBIF dataset UUID (8-4-4-4-12 hex). Obtain one from gbif_search_datasets, gbif_get_dataset, a DATASET_KEY facet, or the datasetKey field on an occurrence record. Omit the field to aggregate across every dataset — an empty string is rejected rather than read as no scope, because GBIF answers a blank datasetKey with the unfiltered aggregation.',
       ),
     occurrenceStatus: z
       .enum(OCCURRENCE_STATUS_VALUES)
@@ -185,15 +190,49 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
     {
       reason: 'invalid_filter',
       code: JsonRpcErrorCode.InvalidParams,
-      when: 'datasetKey is not a UUID, a two-letter country or publishingCountry code is one GBIF does not know, or GBIF rejected the geometry or year scope as malformed.',
+      when: 'A scope filter was supplied blank or whitespace-only, datasetKey is not an 8-4-4-4-12 hex UUID, a two-letter country or publishingCountry code is one GBIF does not know, or GBIF rejected the geometry or year scope as malformed.',
       recovery:
-        'The message names the rejected value. Correct that one scope filter: geometry is a closed WKT ring in longitude latitude order, year is a single year or "min,max", datasetKey is a UUID from gbif_search_datasets, and country and publishingCountry are codes GBIF assigns — take one from a COUNTRY or PUBLISHING_COUNTRY facet.',
+        'The message names the rejected value. A blank scope filter is not a way to skip one — omit the field instead. Otherwise correct that one filter: geometry is a closed WKT ring in longitude latitude order, year is a single year or "min,max", datasetKey is a UUID from gbif_search_datasets, and country and publishingCountry are codes GBIF assigns, so take one from a COUNTRY or PUBLISHING_COUNTRY facet.',
     },
   ],
 
   async handler(input, ctx) {
     ctx.log.info('Fetching occurrence facets', { facet: input.facet, taxonKey: input.taxonKey });
-    if (input.datasetKey?.trim() && !isGbifUuid(input.datasetKey)) {
+    /**
+     * Every string scope filter this tool forwards, checked on presence rather than
+     * on a non-blank value. `/occurrence/search` ignores a parameter it is given with
+     * no value and answers the unfiltered aggregation, so the `?.trim()` spread these
+     * fields used to sit behind partitioned a wider scope than the caller asked
+     * about: `stateProvince: ""` aggregates all 60,290,950 records of a
+     * `taxonKey=212` + `country=GB` scope where `England` aggregates 47,672,439, and
+     * a whitespace-only value does the same. Buckets hide the substitution better
+     * than a record list does — nothing in them says which scope they cover.
+     */
+    const blankFilter = firstBlankFilter({
+      stateProvince: input.stateProvince,
+      year: input.year,
+      geometry: input.geometry,
+    });
+    if (blankFilter) {
+      throw ctx.fail(
+        'invalid_filter',
+        `${blankFilter} was supplied blank. Omit the field to leave it unfiltered — a blank value is not a way to skip a filter.`,
+        { ...ctx.recoveryFor('invalid_filter') },
+      );
+    }
+
+    /**
+     * Checked whenever datasetKey is present, not only when it is non-blank. A
+     * malformed key is rejected locally so the failure carries this tool's recovery
+     * hint instead of a bare upstream 400 that costs a round trip and the retry
+     * budget. The empty string is rejected for the opposite reason: it draws no error
+     * at all — `/occurrence/search?datasetKey=` answers 200 with the unfiltered scope,
+     * so a `?.trim()` guard dropped the scope and aggregated all 2,351,689,943 records
+     * under taxonKey 212 for a caller who believed the buckets covered one dataset.
+     * Letter case stays unchecked: this route resolves a key either way, unlike
+     * `/dataset/search`'s two organization filters.
+     */
+    if (input.datasetKey !== undefined && !isGbifUuid(input.datasetKey)) {
       throw ctx.fail(
         'invalid_filter',
         `datasetKey "${input.datasetKey}" is not a GBIF dataset UUID.`,
@@ -207,11 +246,11 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
         ...(input.taxonKey !== undefined && { taxonKey: input.taxonKey }),
         ...(input.country && { country: input.country }),
         ...(input.publishingCountry && { publishingCountry: input.publishingCountry }),
-        ...(input.stateProvince?.trim() && { stateProvince: input.stateProvince }),
-        ...(input.year?.trim() && { year: input.year }),
+        ...(input.stateProvince !== undefined && { stateProvince: input.stateProvince }),
+        ...(input.year !== undefined && { year: input.year }),
         ...(input.basisOfRecord && { basisOfRecord: input.basisOfRecord }),
-        ...(input.geometry?.trim() && { geometry: input.geometry }),
-        ...(input.datasetKey?.trim() && { datasetKey: input.datasetKey }),
+        ...(input.geometry !== undefined && { geometry: input.geometry }),
+        ...(input.datasetKey !== undefined && { datasetKey: input.datasetKey }),
         ...(input.occurrenceStatus !== 'ANY' && { occurrenceStatus: input.occurrenceStatus }),
         ...(input.iucnRedListCategory && { iucnRedListCategory: input.iucnRedListCategory }),
         facetLimit: input.facetLimit,

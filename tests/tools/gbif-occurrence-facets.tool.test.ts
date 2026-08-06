@@ -270,6 +270,30 @@ describe('gbifOccurrenceFacets', () => {
   });
 
   /**
+   * #53 — the guard used to fire on a non-blank value, so an empty string cleared it
+   * and the forward alike and the buckets partitioned everything. Measured on the
+   * built server: `taxonKey=212` faceted by COUNTRY with `datasetKey: ""` totals
+   * 2,351,689,943, identical to the same call with no datasetKey. Aggregates hide the
+   * substitution better than a record list does — nothing in the buckets says which
+   * scope they cover.
+   */
+  it('rejects an empty datasetKey instead of aggregating every dataset', async () => {
+    const ctx = createMockContext({ errors: gbifOccurrenceFacets.errors });
+    const input = gbifOccurrenceFacets.input.parse({
+      facet: 'COUNTRY',
+      taxonKey: 212,
+      datasetKey: '',
+    });
+    expect(input.datasetKey).toBe('');
+
+    const err = await gbifOccurrenceFacets.handler(input, ctx).catch((e: unknown) => e);
+
+    expect(err).toMatchObject({ data: { reason: 'invalid_filter' } });
+    expect((err as Error).message).toContain('datasetKey');
+    expect(mockGetOccurrenceFacets).not.toHaveBeenCalled();
+  });
+
+  /**
    * #49 — this tool ranks PUBLISHING_COUNTRY and STATE_PROVINCE buckets, so it has
    * to take them back as scope filters too, or a caller can drill one level and no
    * further. Verified live on taxonKey=212 + country=GB + PRESENT: scoping by
@@ -318,6 +342,47 @@ describe('gbifOccurrenceFacets', () => {
       expect.not.objectContaining({ stateProvince: expect.anything() }),
       ctx,
     );
+  });
+
+  /**
+   * #54 — the forward tested `?.trim()`, so a blank stateProvince was dropped and the
+   * buckets partitioned the whole surrounding scope. Measured on the built server:
+   * `taxonKey=212` + `country=GB` + `occurrenceStatus=PRESENT` faceted by COUNTRY
+   * totals 47,672,439 under `stateProvince: "England"` and 60,290,950 under `""` or a
+   * whitespace-only value, matching the omitted-field call bucket for bucket. An
+   * aggregation hides the substitution better than a record list does — nothing in
+   * the buckets says which scope they cover.
+   */
+  it.each(['', '   '])(
+    'rejects stateProvince "%s" instead of aggregating the whole scope',
+    async (blank) => {
+      const ctx = createMockContext({ errors: gbifOccurrenceFacets.errors });
+      const input = gbifOccurrenceFacets.input.parse({
+        facet: 'COUNTRY',
+        taxonKey: 212,
+        country: 'GB',
+        stateProvince: blank,
+      });
+      expect(input.stateProvince).toBe(blank);
+
+      const err = await gbifOccurrenceFacets.handler(input, ctx).catch((e: unknown) => e);
+
+      expect(err).toMatchObject({ data: { reason: 'invalid_filter' } });
+      expect((err as Error).message).toContain('stateProvince');
+      expect(mockGetOccurrenceFacets).not.toHaveBeenCalled();
+    },
+  );
+
+  /** Omitting is still the way to aggregate across every year and everywhere. */
+  it('omits year and geometry when not provided', async () => {
+    mockGetOccurrenceFacets.mockResolvedValue({ count: 0, facets: [] });
+
+    const ctx = createMockContext({ errors: gbifOccurrenceFacets.errors });
+    await gbifOccurrenceFacets.handler(gbifOccurrenceFacets.input.parse({ facet: 'COUNTRY' }), ctx);
+
+    const sent = mockGetOccurrenceFacets.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(sent).not.toHaveProperty('year');
+    expect(sent).not.toHaveProperty('geometry');
   });
 
   /** A lowercase or alpha-3 code aggregates zero upstream rather than erroring. */

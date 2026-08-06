@@ -8,6 +8,7 @@ import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 import { IUCN_RED_LIST_CATEGORY_VALUES, OCCURRENCE_STATUS_VALUES } from '@/services/gbif/types.js';
 import {
+  firstBlankFilter,
   isGbifUuid,
   occurrenceStatusNotice,
   overPaginationCapNotice,
@@ -59,7 +60,7 @@ export const gbifCountOccurrences = tool('gbif_count_occurrences', {
       .string()
       .optional()
       .describe(
-        'State, province, or first-level administrative division, matched as a verbatim string — exact and case-sensitive. GBIF stores what each dataset recorded without normalizing it, so there is no vocabulary to guess from: "England", "England - Greater London", and "Greater London" are three distinct values, and "england" is none of them. Take one from a STATE_PROVINCE facet on gbif_occurrence_facets scoped the same way and pass it back unchanged — an unmatched value counts zero rather than erroring.',
+        'State, province, or first-level administrative division, matched as a verbatim string — exact and case-sensitive. GBIF stores what each dataset recorded without normalizing it, so there is no vocabulary to guess from: "England", "England - Greater London", and "Greater London" are three distinct values, and "england" is none of them. Take one from a STATE_PROVINCE facet on gbif_occurrence_facets scoped the same way and pass it back unchanged — an unmatched value counts zero rather than erroring. Omit the field to count across every state or province — a blank or whitespace-only value is rejected rather than dropped, because GBIF answers one with the unfiltered total.',
       ),
     isGeoreferenced: z
       .boolean()
@@ -71,12 +72,14 @@ export const gbifCountOccurrences = tool('gbif_count_occurrences', {
       .string()
       .optional()
       .describe(
-        'Filter to a specific dataset UUID (8-4-4-4-12 hex) from gbif_search_datasets. The result is not the recordCount the dataset tools and the gbif://dataset/{datasetKey} resource report for the same key: that figure spans every occurrenceStatus, while this count applies occurrenceStatus below, PRESENT by default.',
+        'Filter to a specific dataset UUID (8-4-4-4-12 hex) from gbif_search_datasets. Omit the field to count across every dataset — an empty string is rejected rather than read as no filter, because GBIF answers a blank datasetKey with the unfiltered total. The result is not the recordCount the dataset tools and the gbif://dataset/{datasetKey} resource report for the same key: that figure spans every occurrenceStatus, while this count applies occurrenceStatus below, PRESENT by default.',
       ),
     year: z
       .string()
       .optional()
-      .describe('Year or year range (e.g., "2024" or "2020,2024"). Both endpoints inclusive.'),
+      .describe(
+        'Year or year range (e.g., "2024" or "2020,2024"). Both endpoints inclusive. Omit the field to count across every year — a blank or whitespace-only value is rejected rather than dropped, because GBIF answers one with the unfiltered total.',
+      ),
     occurrenceStatus: z
       .enum(OCCURRENCE_STATUS_VALUES)
       .default('PRESENT')
@@ -113,9 +116,9 @@ export const gbifCountOccurrences = tool('gbif_count_occurrences', {
     {
       reason: 'invalid_filter',
       code: JsonRpcErrorCode.InvalidParams,
-      when: 'datasetKey is not a UUID, a two-letter country or publishingCountry code is one GBIF does not know, or GBIF rejected another filter value as malformed.',
+      when: 'A filter was supplied blank or whitespace-only, datasetKey is not an 8-4-4-4-12 hex UUID, a two-letter country or publishingCountry code is one GBIF does not know, or GBIF rejected another filter value as malformed.',
       recovery:
-        'Supply datasetKey as the 8-4-4-4-12 hex UUID gbif_search_datasets returns; year is a single year or a "min,max" range; country and publishingCountry are codes GBIF assigns, so take one from a COUNTRY or PUBLISHING_COUNTRY facet on gbif_occurrence_facets.',
+        'A blank filter is not a way to skip one — omit the field instead. Otherwise: supply datasetKey as the 8-4-4-4-12 hex UUID gbif_search_datasets returns; year is a single year or a "min,max" range; country and publishingCountry are codes GBIF assigns, so take one from a COUNTRY or PUBLISHING_COUNTRY facet on gbif_occurrence_facets.',
     },
   ],
 
@@ -125,9 +128,40 @@ export const gbifCountOccurrences = tool('gbif_count_occurrences', {
       country: input.country,
     });
 
-    // Rejected locally so a typo fails with this tool's recovery hint instead of a
-    // bare upstream 400 that costs a round trip and the retry budget.
-    if (input.datasetKey?.trim() && !isGbifUuid(input.datasetKey)) {
+    /**
+     * Both string filters this tool forwards, checked on presence rather than on a
+     * non-blank value. `/occurrence/search` ignores a parameter it is given with no
+     * value and answers the unfiltered total, so the `?.trim()` spread these fields
+     * used to sit behind widened the count and reported it as the caller's own:
+     * `stateProvince: ""` counts all 60,290,950 records of a `taxonKey=212` +
+     * `country=GB` scope where `England` counts 47,672,439, and a whitespace-only
+     * value does the same. A count is the whole output here, so nothing else in the
+     * response contradicts the wrong figure.
+     */
+    const blankFilter = firstBlankFilter({
+      stateProvince: input.stateProvince,
+      year: input.year,
+    });
+    if (blankFilter) {
+      throw ctx.fail(
+        'invalid_filter',
+        `${blankFilter} was supplied blank. Omit the field to leave it unfiltered — a blank value is not a way to skip a filter.`,
+        { ...ctx.recoveryFor('invalid_filter') },
+      );
+    }
+
+    /**
+     * Checked whenever datasetKey is present, not only when it is non-blank. A
+     * malformed key is rejected locally so the failure carries this tool's recovery
+     * hint instead of a bare upstream 400 that costs a round trip and the retry
+     * budget. The empty string is rejected for the opposite reason: it draws no error
+     * at all — `/occurrence/search?datasetKey=` answers 200 with the unfiltered scope,
+     * so a `?.trim()` guard dropped the filter and returned all 2,351,689,943 records
+     * under taxonKey 212 to a caller who believed the count was scoped to one dataset.
+     * Letter case stays unchecked: this route resolves a key either way, unlike
+     * `/dataset/search`'s two organization filters.
+     */
+    if (input.datasetKey !== undefined && !isGbifUuid(input.datasetKey)) {
       throw ctx.fail(
         'invalid_filter',
         `datasetKey "${input.datasetKey}" is not a GBIF dataset UUID.`,
@@ -140,10 +174,10 @@ export const gbifCountOccurrences = tool('gbif_count_occurrences', {
         ...(input.taxonKey !== undefined && { taxonKey: input.taxonKey }),
         ...(input.country && { country: input.country }),
         ...(input.publishingCountry && { publishingCountry: input.publishingCountry }),
-        ...(input.stateProvince?.trim() && { stateProvince: input.stateProvince }),
+        ...(input.stateProvince !== undefined && { stateProvince: input.stateProvince }),
         ...(input.isGeoreferenced !== undefined && { isGeoreferenced: input.isGeoreferenced }),
-        ...(input.datasetKey?.trim() && { datasetKey: input.datasetKey }),
-        ...(input.year?.trim() && { year: input.year }),
+        ...(input.datasetKey !== undefined && { datasetKey: input.datasetKey }),
+        ...(input.year !== undefined && { year: input.year }),
         ...(input.occurrenceStatus !== 'ANY' && { occurrenceStatus: input.occurrenceStatus }),
         ...(input.iucnRedListCategory && { iucnRedListCategory: input.iucnRedListCategory }),
       },

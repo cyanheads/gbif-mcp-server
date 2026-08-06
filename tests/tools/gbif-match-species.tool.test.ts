@@ -180,6 +180,47 @@ describe('gbifMatchSpecies', () => {
     );
   });
 
+  /**
+   * #54 — the forward tested `?.trim()`, so a blank kingdom was dropped and the name
+   * matched against the whole backbone. Measured on the built server: `Parus major`
+   * with `kingdom: ""` and with a whitespace-only value each resolve to usageKey
+   * 9705453 at confidence 99, identical to omitting the field, where `Plantae`
+   * resolves to 9711704. The undisambiguated match is the outcome the caller reached
+   * for this field to avoid, and nothing in the response says so.
+   */
+  it.each(['', '   '])(
+    'rejects kingdom "%s" instead of matching undisambiguated',
+    async (blank) => {
+      const ctx = createMockContext({ errors: gbifMatchSpecies.errors });
+      const input = gbifMatchSpecies.input.parse({ name: 'Parus major', kingdom: blank });
+      expect(input.kingdom).toBe(blank);
+
+      const err = await gbifMatchSpecies.handler(input, ctx).catch((e: unknown) => e);
+
+      expect(err).toMatchObject({ data: { reason: 'invalid_filter' } });
+      expect((err as Error).message).toContain('kingdom');
+      expect(mockMatchSpecies).not.toHaveBeenCalled();
+    },
+  );
+
+  /** Omitting the field is still how a caller matches against the whole backbone. */
+  it('omits kingdom when not provided', async () => {
+    mockMatchSpecies.mockResolvedValue({
+      usageKey: 9705453,
+      matchType: 'EXACT',
+      canonicalName: 'Parus major',
+      confidence: 99,
+    });
+
+    const ctx = createMockContext({ errors: gbifMatchSpecies.errors });
+    await gbifMatchSpecies.handler(gbifMatchSpecies.input.parse({ name: 'Parus major' }), ctx);
+
+    expect(mockMatchSpecies).toHaveBeenCalledWith(
+      expect.not.objectContaining({ kingdom: expect.anything() }),
+      ctx,
+    );
+  });
+
   it('handles sparse upstream response', async () => {
     mockMatchSpecies.mockResolvedValue({
       usageKey: 9999,

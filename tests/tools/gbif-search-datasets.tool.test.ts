@@ -195,6 +195,192 @@ describe('gbifSearchDatasets', () => {
     expect(() => gbifSearchDatasets.input.parse({ publishingCountry: '' })).toThrow();
   });
 
+  /**
+   * #52 — `/dataset/search` carries two organization filters for two different
+   * relationships, and only `hostingOrg` was exposed. Measured live: of the first
+   * 25 organizations `/organization?country=GB` lists, all 25 host no datasets
+   * while 13 publish one or two that only `publishingOrg` reaches. Parsing the
+   * field is what proves it is declared — an undeclared key is stripped by Zod,
+   * so a forwarding assertion alone would hold against a tool that never had it.
+   */
+  it('declares publishingOrg and forwards it to the service', async () => {
+    mockSearchDatasets.mockResolvedValue({
+      results: [],
+      count: 0,
+      offset: 0,
+      limit: 20,
+      endOfRecords: true,
+    });
+
+    const ctx = createMockContext({ errors: gbifSearchDatasets.errors });
+    const input = gbifSearchDatasets.input.parse({
+      publishingOrg: '0d72dd7f-6f05-46af-85c2-8b6e77ce5534',
+    });
+    expect(input.publishingOrg).toBe('0d72dd7f-6f05-46af-85c2-8b6e77ce5534');
+
+    await gbifSearchDatasets.handler(input, ctx);
+
+    expect(mockSearchDatasets).toHaveBeenCalledWith(
+      expect.objectContaining({ publishingOrg: '0d72dd7f-6f05-46af-85c2-8b6e77ce5534' }),
+      ctx,
+    );
+  });
+
+  it('forwards hostingOrg unchanged, and both organization filters together', async () => {
+    mockSearchDatasets.mockResolvedValue({
+      results: [],
+      count: 0,
+      offset: 0,
+      limit: 20,
+      endOfRecords: true,
+    });
+
+    const ctx = createMockContext({ errors: gbifSearchDatasets.errors });
+    const input = gbifSearchDatasets.input.parse({
+      hostingOrg: '07f617d0-c688-11d8-bf62-b8a03c50a862',
+      publishingOrg: '0d72dd7f-6f05-46af-85c2-8b6e77ce5534',
+    });
+    await gbifSearchDatasets.handler(input, ctx);
+
+    expect(mockSearchDatasets).toHaveBeenCalledWith(
+      expect.objectContaining({
+        hostingOrg: '07f617d0-c688-11d8-bf62-b8a03c50a862',
+        publishingOrg: '0d72dd7f-6f05-46af-85c2-8b6e77ce5534',
+      }),
+      ctx,
+    );
+  });
+
+  /**
+   * Both silent classes, alongside the malformed one GBIF answers with a 400.
+   * An empty organization value returns all 123,527 indexed datasets, so a guard
+   * that skipped blank values would hand the whole index to a caller who believed
+   * they had filtered by organization. And these two parameters are matched
+   * case-sensitively — `publishingOrg` upper-cased answers 0 where the same key
+   * lowercased answers 3 — so an upper-cased key is a wrong answer, not an error.
+   */
+  it.each([
+    ['publishingOrg', 'not-a-uuid'],
+    ['publishingOrg', ''],
+    ['publishingOrg', '0D72DD7F-6F05-46AF-85C2-8B6E77CE5534'],
+    ['publishingOrg', '0d72dd7f-6F05-46af-85c2-8b6e77ce5534'],
+    ['hostingOrg', 'not-a-uuid'],
+    ['hostingOrg', ''],
+    ['hostingOrg', '07F617D0-C688-11D8-BF62-B8A03C50A862'],
+  ])('rejects %s "%s" as invalid_filter without calling GBIF', async (field, value) => {
+    const ctx = createMockContext({ errors: gbifSearchDatasets.errors });
+    const input = gbifSearchDatasets.input.parse({ [field]: value });
+
+    const err = await gbifSearchDatasets.handler(input, ctx).catch((e: unknown) => e);
+
+    expect(err).toMatchObject({ data: { reason: 'invalid_filter' } });
+    expect((err as Error).message).toContain(field);
+    expect(mockSearchDatasets).not.toHaveBeenCalled();
+  });
+
+  /**
+   * GBIF intersects the two organization filters, so a caller who put one key in
+   * both fields asked for what that organization published *and* serves — usually
+   * nothing. The generic "drop a filter" notice would send them to retry the same
+   * confusion; naming the intersection is what separates it from an empty search.
+   */
+  it('names the intersection in the empty-result notice when both organization filters were applied', async () => {
+    mockSearchDatasets.mockResolvedValue({
+      results: [],
+      count: 0,
+      offset: 0,
+      limit: 20,
+      endOfRecords: true,
+    });
+
+    const ctx = createMockContext({ errors: gbifSearchDatasets.errors });
+    const input = gbifSearchDatasets.input.parse({
+      publishingOrg: '0d72dd7f-6f05-46af-85c2-8b6e77ce5534',
+      hostingOrg: '0d72dd7f-6f05-46af-85c2-8b6e77ce5534',
+    });
+    await gbifSearchDatasets.handler(input, ctx);
+
+    const notice = getEnrichment(ctx).notice as string;
+    expect(notice).toContain('publishingOrg and hostingOrg were both applied');
+    expect(notice).toContain('intersects');
+  });
+
+  it('leaves the empty-result notice generic when only one organization filter was applied', async () => {
+    mockSearchDatasets.mockResolvedValue({
+      results: [],
+      count: 0,
+      offset: 0,
+      limit: 20,
+      endOfRecords: true,
+    });
+
+    const ctx = createMockContext({ errors: gbifSearchDatasets.errors });
+    const input = gbifSearchDatasets.input.parse({
+      publishingOrg: '0d72dd7f-6f05-46af-85c2-8b6e77ce5534',
+    });
+    await gbifSearchDatasets.handler(input, ctx);
+
+    const notice = getEnrichment(ctx).notice as string;
+    expect(notice).toContain('No datasets matched');
+    expect(notice).not.toContain('both applied');
+  });
+
+  /**
+   * The two filters name two different relationships and a caller reading either
+   * one alone has to be able to tell which they want — the same hazard `country`
+   * and `publishingCountry` carry on the occurrence tools, guarded the same way.
+   */
+  it('has each organization field name the other as the different question', () => {
+    const shape = gbifSearchDatasets.input.shape;
+    const publishing = shape.publishingOrg.description ?? '';
+    const hosting = shape.hostingOrg.description ?? '';
+
+    expect(publishing).toContain('hostingOrg');
+    expect(publishing).toMatch(/published/);
+    expect(hosting).toContain('publishingOrg');
+    expect(hosting).toMatch(/installation/);
+    for (const description of [publishing, hosting]) {
+      expect(description).toMatch(/intersected/);
+    }
+  });
+
+  /**
+   * #54 — the forward tested `?.trim()`, so a blank q was dropped. `/dataset/search`
+   * answers the two blank forms two different ways and neither is the search that was
+   * asked for: `?q=` returns all 123,527 indexed datasets, exactly what the same call
+   * returns with no q at all, and `?q=%20%20` returns none, against 1,193 for `moths`.
+   */
+  it.each(['', '   '])('rejects q "%s" instead of browsing the whole index', async (blank) => {
+    const ctx = createMockContext({ errors: gbifSearchDatasets.errors });
+    const input = gbifSearchDatasets.input.parse({ q: blank });
+    expect(input.q).toBe(blank);
+
+    const err = await gbifSearchDatasets.handler(input, ctx).catch((e: unknown) => e);
+
+    expect(err).toMatchObject({ data: { reason: 'invalid_filter' } });
+    expect((err as Error).message).toContain('q');
+    expect(mockSearchDatasets).not.toHaveBeenCalled();
+  });
+
+  /** Omitting the field is still how a caller browses without a term. */
+  it('omits q when not provided', async () => {
+    mockSearchDatasets.mockResolvedValue({
+      results: [],
+      count: 123527,
+      offset: 0,
+      limit: 20,
+      endOfRecords: false,
+    });
+
+    const ctx = createMockContext({ errors: gbifSearchDatasets.errors });
+    await gbifSearchDatasets.handler(gbifSearchDatasets.input.parse({ type: 'CHECKLIST' }), ctx);
+
+    expect(mockSearchDatasets).toHaveBeenCalledWith(
+      expect.not.objectContaining({ q: expect.anything() }),
+      ctx,
+    );
+  });
+
   it('handles sparse dataset records', async () => {
     mockSearchDatasets.mockResolvedValue({
       results: [{ key: 'sparse-key' }],

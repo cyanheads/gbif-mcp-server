@@ -157,6 +157,103 @@ describe('gbifSearchSpecies', () => {
     );
   });
 
+  it('passes datasetKey to the service', async () => {
+    mockSearchSpecies.mockResolvedValue({
+      results: [],
+      count: 0,
+      offset: 0,
+      limit: 20,
+      endOfRecords: true,
+    });
+
+    const ctx = createMockContext({ errors: gbifSearchSpecies.errors });
+    const input = gbifSearchSpecies.input.parse({
+      q: 'Aves',
+      datasetKey: '7ddf754f-d193-4cc9-b351-99906754a03b',
+    });
+    await gbifSearchSpecies.handler(input, ctx);
+
+    expect(mockSearchSpecies).toHaveBeenCalledWith(
+      expect.objectContaining({ datasetKey: '7ddf754f-d193-4cc9-b351-99906754a03b' }),
+      ctx,
+    );
+  });
+
+  /** Omitting the field is still how a caller searches the whole backbone. */
+  it('omits datasetKey when not provided', async () => {
+    mockSearchSpecies.mockResolvedValue({
+      results: [],
+      count: 4972,
+      offset: 0,
+      limit: 20,
+      endOfRecords: false,
+    });
+
+    const ctx = createMockContext({ errors: gbifSearchSpecies.errors });
+    await gbifSearchSpecies.handler(gbifSearchSpecies.input.parse({ q: 'Aves' }), ctx);
+
+    expect(mockSearchSpecies).toHaveBeenCalledWith(
+      expect.not.objectContaining({ datasetKey: expect.anything() }),
+      ctx,
+    );
+  });
+
+  /**
+   * #54 — the forward tested `?.trim()`, so a blank q was dropped. `/species/search`
+   * answers the two blank forms two different ways and neither is the search that was
+   * asked for: `?q=` returns the whole 46,623,747-name index, exactly what the same
+   * call returns with no q at all, and `?q=%20%20` returns nothing.
+   */
+  it.each(['', '   '])('rejects q "%s" instead of browsing the whole backbone', async (blank) => {
+    const ctx = createMockContext({ errors: gbifSearchSpecies.errors });
+    const input = gbifSearchSpecies.input.parse({ q: blank });
+    expect(input.q).toBe(blank);
+
+    const err = await gbifSearchSpecies.handler(input, ctx).catch((e: unknown) => e);
+
+    expect(err).toMatchObject({ data: { reason: 'invalid_filter' } });
+    expect((err as Error).message).toContain('q');
+    expect(mockSearchSpecies).not.toHaveBeenCalled();
+  });
+
+  /** Omitting the field is still how a caller browses without a name term. */
+  it('omits q when not provided', async () => {
+    mockSearchSpecies.mockResolvedValue({
+      results: [],
+      count: 558588,
+      offset: 0,
+      limit: 20,
+      endOfRecords: false,
+    });
+
+    const ctx = createMockContext({ errors: gbifSearchSpecies.errors });
+    await gbifSearchSpecies.handler(gbifSearchSpecies.input.parse({ rank: 'FAMILY' }), ctx);
+
+    expect(mockSearchSpecies).toHaveBeenCalledWith(
+      expect.not.objectContaining({ q: expect.anything() }),
+      ctx,
+    );
+  });
+
+  /**
+   * #53 — the guard used to fire on a non-blank value, so an empty string cleared it
+   * and the forward alike and the search ran against the whole backbone. Measured on
+   * the built server: `q=Aves` with `datasetKey: ""` returns the same 4,972 taxa as
+   * the same call with no datasetKey, so a caller scoping to one checklist gets every
+   * checklist and the backbone besides.
+   */
+  it('rejects an empty datasetKey instead of searching the whole backbone', async () => {
+    const ctx = createMockContext({ errors: gbifSearchSpecies.errors });
+    const input = gbifSearchSpecies.input.parse({ q: 'Aves', datasetKey: '' });
+    expect(input.datasetKey).toBe('');
+
+    const err = await gbifSearchSpecies.handler(input, ctx).catch((e: unknown) => e);
+
+    expect(err).toMatchObject({ data: { reason: 'invalid_filter' } });
+    expect((err as Error).message).toContain('datasetKey');
+    expect(mockSearchSpecies).not.toHaveBeenCalled();
+  });
+
   it('handles sparse taxon records', async () => {
     mockSearchSpecies.mockResolvedValue({
       results: [{ key: 999 }],

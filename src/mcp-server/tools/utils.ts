@@ -34,6 +34,37 @@ export function isGbifUuid(value: string): boolean {
 }
 
 /**
+ * Name of the first filter in `filters` supplied with no non-whitespace content,
+ * or `undefined` when every supplied value carries some. Keys are checked in
+ * declaration order, so the reported field is stable for a given input.
+ *
+ * Every filter this server forwards used to be spread behind a `?.trim()` test,
+ * which dropped a blank value instead of sending it — and GBIF answers a dropped
+ * filter with the unfiltered scope. `stateProvince: ""` returned all 60,290,950
+ * records of a `taxonKey=212` + `country=GB` scope where `England` returns
+ * 47,672,439, and `""` matched the omitted-field figure exactly. So the caller
+ * that supplied a filter got the answer to a wider question with nothing in the
+ * response saying so. This inverts that test: the values the old guard dropped
+ * are exactly the values it now names, and every value it forwarded is still
+ * forwarded byte-identically — untrimmed, since GBIF trims a padded value itself
+ * and normalizing one here would hide a caller-side defect.
+ *
+ * A blank is rejected rather than dropped even where the upstream answer is not
+ * the unfiltered scope. `/dataset/search?q=` returns all 123,527 datasets while
+ * `?q=%20%20` returns none: one space flips the answer between the whole index
+ * and nothing, and no caller can predict which they will get. Neither is the
+ * search that was asked for.
+ */
+export function firstBlankFilter(
+  filters: Readonly<Record<string, string | undefined>>,
+): string | undefined {
+  for (const [field, value] of Object.entries(filters)) {
+    if (value !== undefined && value.trim() === '') return field;
+  }
+  return;
+}
+
+/**
  * Largest `offset + limit` GBIF's `/occurrence/search` serves. A request at exactly
  * this sum answers 200; one past it answers HTTP 400 `Max offset of 100001 exceeded`.
  * Checked locally so an over-cap request fails immediately instead of spending the

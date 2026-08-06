@@ -105,6 +105,38 @@ describe('gbifCountOccurrences', () => {
   });
 
   /**
+   * #53 — the guard used to fire on a non-blank value, so an empty string cleared it
+   * and the forward alike and the count ran unscoped. Measured on the built server:
+   * `taxonKey=212` with `datasetKey: ""` counts 2,351,689,943, identical to the same
+   * call with no datasetKey at all, where the eBird key counts 1,775,781,186. A count
+   * is the whole output here, so nothing else in the response contradicts it.
+   */
+  it('rejects an empty datasetKey instead of counting every dataset', async () => {
+    const ctx = createMockContext({ errors: gbifCountOccurrences.errors });
+    const input = gbifCountOccurrences.input.parse({ taxonKey: 212, datasetKey: '' });
+    expect(input.datasetKey).toBe('');
+
+    const err = await gbifCountOccurrences.handler(input, ctx).catch((e: unknown) => e);
+
+    expect(err).toMatchObject({ data: { reason: 'invalid_filter' } });
+    expect((err as Error).message).toContain('datasetKey');
+    expect(mockCountOccurrences).not.toHaveBeenCalled();
+  });
+
+  /** Omitting the field is still how a caller counts across every dataset. */
+  it('omits datasetKey when not provided', async () => {
+    mockCountOccurrences.mockResolvedValue(2351689943);
+
+    const ctx = createMockContext({ errors: gbifCountOccurrences.errors });
+    await gbifCountOccurrences.handler(gbifCountOccurrences.input.parse({ taxonKey: 212 }), ctx);
+
+    expect(mockCountOccurrences).toHaveBeenCalledWith(
+      expect.not.objectContaining({ datasetKey: expect.anything() }),
+      ctx,
+    );
+  });
+
+  /**
    * #36 — GBIF counts absence records alongside sightings, and for some taxa they
    * dominate: taxonKey 2263005 (Radicipes gracilis) is 2,351,582 records of which
    * 79 are PRESENT. The count tool therefore filters to PRESENT unless told
@@ -243,6 +275,46 @@ describe('gbifCountOccurrences', () => {
     );
     expect(mockCountOccurrences).toHaveBeenCalledWith(
       expect.not.objectContaining({ stateProvince: expect.anything() }),
+      ctx,
+    );
+  });
+
+  /**
+   * #54 — the forward tested `?.trim()`, so a blank stateProvince was dropped and the
+   * count covered the whole surrounding scope. Measured on the built server:
+   * `taxonKey=212` + `country=GB` + `occurrenceStatus=PRESENT` counts 47,672,439 under
+   * `stateProvince: "England"` and 60,290,950 under `""` or a whitespace-only value,
+   * which is the figure the same call returns with the field omitted. A count is the
+   * whole output here, so nothing else in the response contradicts the wrong figure.
+   */
+  it.each(['', '   '])(
+    'rejects stateProvince "%s" instead of counting the whole scope',
+    async (blank) => {
+      const ctx = createMockContext({ errors: gbifCountOccurrences.errors });
+      const input = gbifCountOccurrences.input.parse({
+        taxonKey: 212,
+        country: 'GB',
+        stateProvince: blank,
+      });
+      expect(input.stateProvince).toBe(blank);
+
+      const err = await gbifCountOccurrences.handler(input, ctx).catch((e: unknown) => e);
+
+      expect(err).toMatchObject({ data: { reason: 'invalid_filter' } });
+      expect((err as Error).message).toContain('stateProvince');
+      expect(mockCountOccurrences).not.toHaveBeenCalled();
+    },
+  );
+
+  /** Omitting is still the way to count across every year. */
+  it('omits year when not provided', async () => {
+    mockCountOccurrences.mockResolvedValue(1);
+
+    const ctx = createMockContext({ errors: gbifCountOccurrences.errors });
+    await gbifCountOccurrences.handler(gbifCountOccurrences.input.parse({ taxonKey: 212 }), ctx);
+
+    expect(mockCountOccurrences).toHaveBeenCalledWith(
+      expect.not.objectContaining({ year: expect.anything() }),
       ctx,
     );
   });

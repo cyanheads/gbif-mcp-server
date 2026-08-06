@@ -98,7 +98,33 @@ describe('gbifSearchPublishers', () => {
     );
   });
 
-  it('does not send blank q to service', async () => {
+  /**
+   * #53 — the forward tested `?.trim()`, so an empty country was dropped and the
+   * registry answered unfiltered. Measured on the built server: `country: ""` returns
+   * all 3,561 registered organizations, against 223 for `GB`. Only the empty string
+   * is guarded — `/organization` resolves the parsed country, so `gb` and `GBR` are
+   * correct answers rather than silent ones, and anything it cannot parse (whitespace
+   * included) draws a 400 the service already tags `invalid_filter`.
+   */
+  it('rejects an empty country instead of searching every country', async () => {
+    const ctx = createMockContext({ errors: gbifSearchPublishers.errors });
+    const input = gbifSearchPublishers.input.parse({ country: '' });
+    expect(input.country).toBe('');
+
+    const err = await gbifSearchPublishers.handler(input, ctx).catch((e: unknown) => e);
+
+    expect(err).toMatchObject({ data: { reason: 'invalid_filter' } });
+    expect((err as Error).message).toContain('country');
+    expect(mockSearchPublishers).not.toHaveBeenCalled();
+  });
+
+  /**
+   * A whitespace-only country reached the same silent outcome by a different route:
+   * the forward tested `?.trim()`, so it was dropped before the request. It is now
+   * forwarded verbatim, and `/organization?country=%20%20` answers `400 Cannot parse`
+   * — an error naming the value, which is the point.
+   */
+  it('forwards a whitespace-only country rather than dropping the filter', async () => {
     mockSearchPublishers.mockResolvedValue({
       results: [],
       count: 0,
@@ -107,13 +133,68 @@ describe('gbifSearchPublishers', () => {
       endOfRecords: true,
     });
 
-    const ctx = createMockContext();
-    // q with only spaces — should be trimmed away
-    const input = gbifSearchPublishers.input.parse({ q: '   ' });
-    await gbifSearchPublishers.handler(input, ctx);
+    const ctx = createMockContext({ errors: gbifSearchPublishers.errors });
+    await gbifSearchPublishers.handler(gbifSearchPublishers.input.parse({ country: '   ' }), ctx);
 
     expect(mockSearchPublishers).toHaveBeenCalledWith(
-      expect.not.objectContaining({ q: '   ' }),
+      expect.objectContaining({ country: '   ' }),
+      ctx,
+    );
+  });
+
+  /** Omitting the field is still how a caller searches every country. */
+  it('omits country when not provided', async () => {
+    mockSearchPublishers.mockResolvedValue({
+      results: [],
+      count: 3561,
+      offset: 0,
+      limit: 20,
+      endOfRecords: false,
+    });
+
+    const ctx = createMockContext({ errors: gbifSearchPublishers.errors });
+    await gbifSearchPublishers.handler(gbifSearchPublishers.input.parse({ q: 'museum' }), ctx);
+
+    expect(mockSearchPublishers).toHaveBeenCalledWith(
+      expect.not.objectContaining({ country: expect.anything() }),
+      ctx,
+    );
+  });
+
+  /**
+   * #54 — a blank q used to be dropped before the request, which is how the registry
+   * answered a name search with every name in it. Measured on the built server:
+   * `/organization?q=` and `?q=%20%20` each return all 3,561 registered
+   * organizations, against 460 for `museum`. Both forms are silent here, unlike
+   * `country`, where only the empty string is.
+   */
+  it.each(['', '   '])('rejects q "%s" instead of searching every organization', async (blank) => {
+    const ctx = createMockContext({ errors: gbifSearchPublishers.errors });
+    const input = gbifSearchPublishers.input.parse({ q: blank });
+    expect(input.q).toBe(blank);
+
+    const err = await gbifSearchPublishers.handler(input, ctx).catch((e: unknown) => e);
+
+    expect(err).toMatchObject({ data: { reason: 'invalid_filter' } });
+    expect((err as Error).message).toContain('q');
+    expect(mockSearchPublishers).not.toHaveBeenCalled();
+  });
+
+  /** Omitting the field is still how a caller browses without a name term. */
+  it('omits q when not provided', async () => {
+    mockSearchPublishers.mockResolvedValue({
+      results: [],
+      count: 3561,
+      offset: 0,
+      limit: 20,
+      endOfRecords: false,
+    });
+
+    const ctx = createMockContext({ errors: gbifSearchPublishers.errors });
+    await gbifSearchPublishers.handler(gbifSearchPublishers.input.parse({ country: 'GB' }), ctx);
+
+    expect(mockSearchPublishers).toHaveBeenCalledWith(
+      expect.not.objectContaining({ q: expect.anything() }),
       ctx,
     );
   });

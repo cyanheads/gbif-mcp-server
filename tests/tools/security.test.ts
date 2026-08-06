@@ -135,6 +135,7 @@ describe('UUID-typed inputs reject before reaching GBIF', () => {
     { name: 'gbif_count_occurrences.datasetKey', def: gbifCountOccurrences, field: 'datasetKey' },
     { name: 'gbif_search_species.datasetKey', def: gbifSearchSpecies, field: 'datasetKey' },
     { name: 'gbif_search_datasets.hostingOrg', def: gbifSearchDatasets, field: 'hostingOrg' },
+    { name: 'gbif_search_datasets.publishingOrg', def: gbifSearchDatasets, field: 'publishingOrg' },
     { name: 'gbif_get_dataset.datasetKey', def: gbifGetDataset, field: 'datasetKey' },
     {
       name: 'gbif_occurrence_facets.datasetKey',
@@ -159,6 +160,25 @@ describe('UUID-typed inputs reject before reaching GBIF', () => {
     });
 
     /**
+     * #52, #53 — the empty string is the one malformed key GBIF answers with a wrong
+     * result instead of an error: every route behind these fields ignores a blank
+     * parameter and returns the unfiltered scope, so a guard that skipped blank values
+     * dropped the filter and handed back everything under the caller's own belief that
+     * the query was scoped. Whitespace alone does the same on `/occurrence/search`, and
+     * `isGbifUuid` catches both because it neither trims nor accepts an empty match.
+     */
+    it.each(['', '   '])(`${name} rejects "%s" as invalid_filter`, async (blank) => {
+      const ctx = createMockContext({ errors: def.errors });
+      const input = def.input.parse({ ...extra, [field]: blank });
+      expect((input as Record<string, unknown>)[field]).toBe(blank);
+
+      const err = await def.handler(input as never, ctx).catch((e: unknown) => e);
+
+      expect(err).toMatchObject({ data: { reason: 'invalid_filter' } });
+      expect(mockSearch).not.toHaveBeenCalled();
+    });
+
+    /**
      * A padded key is forwarded verbatim, not trimmed, so accepting one would let a
      * caller-side defect reach GBIF unexamined — and `/occurrence/count`, which the
      * dataset record-count lookup still uses, answers 200 with `0` for a malformed
@@ -175,6 +195,114 @@ describe('UUID-typed inputs reject before reaching GBIF', () => {
       expect(err).toMatchObject({ data: { reason: 'invalid_filter' } });
       expect(mockSearch).not.toHaveBeenCalled();
     });
+  }
+});
+
+/**
+ * #54 — the counterpart table to the UUID one above, for the filters with no shape
+ * to check. Every one of them used to be spread behind a `?.trim()` test, so a blank
+ * value was dropped rather than sent and GBIF answered the unfiltered scope:
+ * `stateProvince: ""` returns all 60,290,950 records of a `taxonKey=212` +
+ * `country=GB` scope where `England` returns 47,672,439, and `scientificName`,
+ * `year`, `geometry`, the coordinate ranges, and `coordinateUncertaintyInMeters`
+ * each behave the same way on that route. Whitespace alone does too. Where the
+ * upstream answer differs — `/dataset/search?q=%20%20` returns none where `?q=`
+ * returns all 123,527 — the guard still fires, because one space between the whole
+ * index and an empty page is not a distinction a caller can plan around.
+ *
+ * `gbif_search_species` exposes `kingdom`, `family`, and `genus` and they are
+ * deliberately absent from this table: `/species/search` implements none of the
+ * three, answering identically to an invented parameter name (46,623,747 either
+ * way), so there is no filter for a blank value to drop.
+ */
+describe('Blank filters reject before reaching GBIF', () => {
+  const mockCall = vi.fn();
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getGbifService).mockReturnValue({
+      searchOccurrences: mockCall,
+      countOccurrences: mockCall,
+      getOccurrenceFacets: mockCall,
+      searchSpecies: mockCall,
+      searchDatasets: mockCall,
+      searchPublishers: mockCall,
+      matchSpecies: mockCall,
+    } as never);
+  });
+
+  const blankInputs = [
+    {
+      name: 'gbif_search_occurrences',
+      def: gbifSearchOccurrences,
+      extra: {},
+      fields: {
+        scientificName: 'Parus major',
+        stateProvince: 'England',
+        decimalLatitude: '50,52',
+        decimalLongitude: '-2,-1',
+        geometry: 'POLYGON((-2 50,-1 50,-1 51,-2 51,-2 50))',
+        year: '2020',
+        coordinateUncertaintyInMeters: '0,1000',
+      },
+    },
+    {
+      name: 'gbif_count_occurrences',
+      def: gbifCountOccurrences,
+      extra: {},
+      fields: { stateProvince: 'England', year: '2020' },
+    },
+    {
+      name: 'gbif_occurrence_facets',
+      def: gbifOccurrenceFacets,
+      extra: { facet: 'COUNTRY' },
+      fields: {
+        stateProvince: 'England',
+        year: '2020',
+        geometry: 'POLYGON((-2 50,-1 50,-1 51,-2 51,-2 50))',
+      },
+    },
+    { name: 'gbif_search_species', def: gbifSearchSpecies, extra: {}, fields: { q: 'Aves' } },
+    { name: 'gbif_search_datasets', def: gbifSearchDatasets, extra: {}, fields: { q: 'moths' } },
+    {
+      name: 'gbif_search_publishers',
+      def: gbifSearchPublishers,
+      extra: {},
+      fields: { q: 'museum' },
+    },
+    {
+      name: 'gbif_match_species',
+      def: gbifMatchSpecies,
+      extra: { name: 'Parus major' },
+      fields: { kingdom: 'Animalia' },
+    },
+  ] as const;
+
+  for (const { name, def, extra, fields } of blankInputs) {
+    for (const [field, realValue] of Object.entries(fields)) {
+      it.each(['', '   '])(`${name}.${field} rejects "%s" as invalid_filter`, async (blank) => {
+        const ctx = createMockContext({ errors: def.errors });
+        const input = def.input.parse({ ...extra, [field]: blank });
+        expect((input as Record<string, unknown>)[field]).toBe(blank);
+
+        const err = await def.handler(input as never, ctx).catch((e: unknown) => e);
+
+        expect(err).toMatchObject({ data: { reason: 'invalid_filter' } });
+        expect((err as Error).message).toContain(field);
+        expect(mockCall).not.toHaveBeenCalled();
+      });
+
+      /**
+       * A value that is not blank still reaches GBIF untouched — the guard rejects
+       * exactly the set the old `?.trim()` test dropped and narrows nothing else.
+       * Parsing pins the field as declared too: an undeclared key is stripped by
+       * Zod, so every rejection above would hold against a tool that never had it.
+       */
+      it(`${name}.${field} forwards "${realValue}" unchanged`, () => {
+        const parsed = def.input.parse({ ...extra, [field]: realValue }) as Record<string, unknown>;
+        expect(parsed[field]).toBe(realValue);
+      });
+    }
   }
 });
 
@@ -229,8 +357,11 @@ describe('Closed-vocabulary occurrence filters reject before the handler runs', 
  * parses but is not stored verbatim — lowercase, mixed case, alpha-3 — answers
  * 200 with zero rows. The silent half is the dangerous one, so every such schema
  * carries a `^[A-Z]{2}$` pattern and every non-code string fails before the
- * handler runs. `stateProvince` is deliberately absent from this suite — it is
- * free text by nature, guarded by a runtime notice instead.
+ * handler runs. `stateProvince` is deliberately absent from this suite — GBIF
+ * stores whatever each dataset recorded, so there is no vocabulary for a pattern
+ * to check. Its two guards live elsewhere: a blank value fails in the handler
+ * (the blank-filter suite above) and an unmatched one draws the empty-result
+ * notice.
  */
 describe('country codes reject non-code strings before the handler runs', () => {
   const patternInputs = [
@@ -330,6 +461,16 @@ describe('gbif_search_publishers.country stays unconstrained', () => {
       expect(parsed.country).toBe(form);
     });
   }
+
+  /**
+   * #53 — the one country value the registry answers wrongly rather than loudly is a
+   * blank one, which returns all 3,561 organizations. It is rejected in the handler
+   * rather than by a schema pattern, so the schema still parses it: pinning that here
+   * keeps the two halves from being conflated into a pattern this route cannot take.
+   */
+  it('parses an empty country and leaves rejecting it to the handler', () => {
+    expect(gbifSearchPublishers.input.parse({ country: '' }).country).toBe('');
+  });
 });
 
 describe('Oversized input handling', () => {

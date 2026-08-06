@@ -297,6 +297,26 @@ describe('gbifSearchOccurrences', () => {
     expect(mockSearchOccurrences).not.toHaveBeenCalled();
   });
 
+  /**
+   * #53 — the guard used to fire on a non-blank value, so an empty string cleared it
+   * and the forward alike and the search ran unscoped. Measured on the built server:
+   * `taxonKey=212` with `datasetKey: ""` returns 2,351,689,943 records and occurrence
+   * 1291505203 as the first, identical to the same call with no datasetKey at all,
+   * where the eBird key returns 1,775,781,186. The caller sees a scoped query and
+   * gets an unscoped answer, which is worse than the one retry a rejection costs.
+   */
+  it('rejects an empty datasetKey instead of searching every dataset', async () => {
+    const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
+    const input = gbifSearchOccurrences.input.parse({ taxonKey: 212, datasetKey: '' });
+    expect(input.datasetKey).toBe('');
+
+    const err = await gbifSearchOccurrences.handler(input, ctx).catch((e: unknown) => e);
+
+    expect(err).toMatchObject({ data: { reason: 'invalid_filter' } });
+    expect((err as Error).message).toContain('datasetKey');
+    expect(mockSearchOccurrences).not.toHaveBeenCalled();
+  });
+
   it('handles sparse occurrence records', async () => {
     mockSearchOccurrences.mockResolvedValue({
       results: [{ key: 999, taxonKey: 5231190 }],
@@ -510,6 +530,65 @@ describe('gbifSearchOccurrences', () => {
       expect.not.objectContaining({ stateProvince: expect.anything() }),
       ctx,
     );
+  });
+
+  /**
+   * #54 — the forward tested `?.trim()`, so a blank stateProvince was dropped and the
+   * search ran against the whole surrounding scope. Measured on the built server:
+   * `taxonKey=212` + `country=GB` + `occurrenceStatus=PRESENT` returns 47,672,439
+   * records under `stateProvince: "England"` and 60,290,950 under `""`, which is the
+   * figure the same call returns with the field omitted. A whitespace-only value
+   * returns 60,290,950 too. The caller sees a query scoped to one state or province
+   * and gets the whole country.
+   */
+  it.each(['', '   '])(
+    'rejects stateProvince "%s" instead of searching the whole scope',
+    async (blank) => {
+      const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
+      const input = gbifSearchOccurrences.input.parse({
+        taxonKey: 212,
+        country: 'GB',
+        stateProvince: blank,
+      });
+      expect(input.stateProvince).toBe(blank);
+
+      const err = await gbifSearchOccurrences.handler(input, ctx).catch((e: unknown) => e);
+
+      expect(err).toMatchObject({ data: { reason: 'invalid_filter' } });
+      expect((err as Error).message).toContain('stateProvince');
+      expect(mockSearchOccurrences).not.toHaveBeenCalled();
+    },
+  );
+
+  /**
+   * Omitting is still the way to leave a filter off, for every string filter at
+   * once — the guard rejects blank values, it does not require the fields.
+   */
+  it('sends no string filter at all when the caller supplies none', async () => {
+    mockSearchOccurrences.mockResolvedValue({
+      results: [],
+      count: 0,
+      offset: 0,
+      limit: 20,
+      endOfRecords: true,
+    });
+
+    const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
+    await gbifSearchOccurrences.handler(gbifSearchOccurrences.input.parse({ taxonKey: 212 }), ctx);
+
+    const sent = mockSearchOccurrences.mock.calls[0]?.[0] as Record<string, unknown>;
+    for (const field of [
+      'scientificName',
+      'stateProvince',
+      'decimalLatitude',
+      'decimalLongitude',
+      'geometry',
+      'year',
+      'coordinateUncertaintyInMeters',
+    ]) {
+      expect(sent).not.toHaveProperty(field);
+    }
+    expect(sent).toMatchObject({ taxonKey: 212 });
   });
 
   /**

@@ -6,6 +6,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
+import { firstBlankFilter } from '../utils.js';
 
 export const gbifMatchSpecies = tool('gbif_match_species', {
   title: 'Match Species Name',
@@ -35,7 +36,7 @@ export const gbifMatchSpecies = tool('gbif_match_species', {
       .string()
       .optional()
       .describe(
-        'Narrow the match to a specific kingdom (e.g., "Animalia", "Plantae", "Fungi") to disambiguate names that appear in multiple kingdoms.',
+        'Narrow the match to a specific kingdom (e.g., "Animalia", "Plantae", "Fungi") to disambiguate names that appear in multiple kingdoms. Omit the field to match against the whole backbone — a blank or whitespace-only value is rejected rather than dropped, because GBIF answers one with the undisambiguated match, which is indistinguishable from a match that honored the kingdom.',
       ),
     rank: z
       .enum(['KINGDOM', 'PHYLUM', 'CLASS', 'ORDER', 'FAMILY', 'GENUS', 'SPECIES', 'SUBSPECIES'])
@@ -96,10 +97,10 @@ export const gbifMatchSpecies = tool('gbif_match_species', {
   },
 
   /**
-   * No `invalid_filter` entry: `/species/match` answers HTTP 200 for every input this
-   * schema can produce — a malformed kingdom, an out-of-enum rank, and an empty, very
-   * long, or control-character name all come back as a normal match or matchType NONE.
-   * Declaring a reason nothing can throw is the same defect as an undeclared one.
+   * `invalid_filter` covers a locally rejected value only. `/species/match` answers
+   * HTTP 200 for every input this schema can produce — a malformed kingdom, an
+   * out-of-enum rank, and an empty, very long, or control-character name all come
+   * back as a normal match or matchType NONE — so nothing upstream can raise it.
    */
   errors: [
     {
@@ -109,15 +110,40 @@ export const gbifMatchSpecies = tool('gbif_match_species', {
       recovery:
         'Try a broader name, remove the strict flag, or search with gbif_search_species instead.',
     },
+    {
+      reason: 'invalid_filter',
+      code: JsonRpcErrorCode.InvalidParams,
+      when: 'kingdom was supplied blank or whitespace-only, which disambiguates nothing.',
+      recovery:
+        'Supply kingdom as a backbone kingdom name such as Animalia, Plantae, or Fungi, or omit the field to match against the whole backbone — a blank value is not a way to skip the filter.',
+    },
   ],
 
   async handler(input, ctx) {
     ctx.log.info('Matching species name', { name: input.name, strict: input.strict });
+    /**
+     * Checked on presence rather than on a non-blank value. `/species/match` ignores
+     * a blank kingdom and matches against the whole backbone: `Parus major` with
+     * `kingdom=` and with `kingdom=%20%20` each resolve to usageKey 9705453 at
+     * confidence 99, the same as omitting the field, where `kingdom=Plantae` resolves
+     * to 9711704 instead. The undisambiguated answer is the one the caller reached
+     * for this field to avoid, and nothing in the response says the constraint was
+     * dropped.
+     */
+    const blankFilter = firstBlankFilter({ kingdom: input.kingdom });
+    if (blankFilter) {
+      throw ctx.fail(
+        'invalid_filter',
+        `${blankFilter} was supplied blank. Omit the field to leave it unfiltered — a blank value is not a way to skip a filter.`,
+        { ...ctx.recoveryFor('invalid_filter') },
+      );
+    }
+
     const raw = await getGbifService().matchSpecies(
       {
         name: input.name,
         strict: input.strict,
-        ...(input.kingdom?.trim() && { kingdom: input.kingdom }),
+        ...(input.kingdom !== undefined && { kingdom: input.kingdom }),
         ...(input.rank && { rank: input.rank }),
       },
       ctx,

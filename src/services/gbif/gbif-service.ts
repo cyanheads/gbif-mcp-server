@@ -413,11 +413,18 @@ export class GbifService {
 
   // ─── Datasets ─────────────────────────────────────────────────────────────────
 
+  /**
+   * `/dataset/search` carries two organization filters for two different
+   * relationships: `publishingOrg` matches the dataset's owner and `hostingOrg`
+   * the organization whose installation serves it. Both are forwarded, and GBIF
+   * intersects them when both are present.
+   */
   searchDatasets(
     params: {
       q?: string;
       type?: string;
       publishingCountry?: string;
+      publishingOrg?: string;
       hostingOrg?: string;
       limit?: number;
       offset?: number;
@@ -428,6 +435,7 @@ export class GbifService {
     if (params.q) queryParams.q = params.q;
     if (params.type) queryParams.type = params.type;
     if (params.publishingCountry) queryParams.publishingCountry = params.publishingCountry;
+    if (params.publishingOrg) queryParams.publishingOrg = params.publishingOrg;
     if (params.hostingOrg) queryParams.hostingOrg = params.hostingOrg;
     if (params.limit !== undefined) queryParams.limit = params.limit;
     if (params.offset !== undefined) queryParams.offset = params.offset;

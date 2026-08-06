@@ -472,4 +472,35 @@ describe('GbifService occurrence filter pass-through', () => {
     expect(params.has('publishingCountry')).toBe(false);
     expect(params.has('stateProvince')).toBe(false);
   });
+
+  /**
+   * #52 — `/dataset/search` names two organization relationships and the two
+   * parameters are one character apart in effect, so a mix-up here would answer a
+   * different question under the caller's own vocabulary. Note that
+   * `/dataset/search` ignores a parameter name it does not recognize and answers
+   * 200 with the unfiltered total, so these assert only that both names leave this
+   * process under the right spelling; that GBIF honors each is a live-API property,
+   * verified separately.
+   */
+  it('sends publishingOrg and hostingOrg under their own names on searchDatasets', async () => {
+    await service().searchDatasets(
+      {
+        publishingOrg: '0d72dd7f-6f05-46af-85c2-8b6e77ce5534',
+        hostingOrg: '07f617d0-c688-11d8-bf62-b8a03c50a862',
+      },
+      createMockContext(),
+    );
+
+    const params = sentParams();
+    expect(params.get('publishingOrg')).toBe('0d72dd7f-6f05-46af-85c2-8b6e77ce5534');
+    expect(params.get('hostingOrg')).toBe('07f617d0-c688-11d8-bf62-b8a03c50a862');
+  });
+
+  it('omits both organization filters when the caller supplies neither', async () => {
+    await service().searchDatasets({ q: 'moths' }, createMockContext());
+
+    const params = sentParams();
+    expect(params.has('publishingOrg')).toBe(false);
+    expect(params.has('hostingOrg')).toBe(false);
+  });
 });

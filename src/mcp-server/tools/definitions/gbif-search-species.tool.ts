@@ -6,7 +6,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
-import { isGbifUuid } from '../utils.js';
+import { firstBlankFilter, isGbifUuid } from '../utils.js';
 
 /** Empty-result and pagination-overshoot guidance. */
 function buildNotice(args: {
@@ -36,7 +36,9 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
     q: z
       .string()
       .optional()
-      .describe('Name fragment to search for. Matches scientific and vernacular names.'),
+      .describe(
+        'Name fragment to search for. Matches scientific and vernacular names. Omit the field to browse without a name term — a blank or whitespace-only value is rejected rather than sent, because GBIF answers a blank one with the whole 46,623,747-name index and a whitespace-only one with nothing, and neither is the search a caller who filled the field was asking for.',
+      ),
     rank: z
       .enum(['KINGDOM', 'PHYLUM', 'CLASS', 'ORDER', 'FAMILY', 'GENUS', 'SPECIES', 'SUBSPECIES'])
       .optional()
@@ -52,7 +54,7 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
       .string()
       .optional()
       .describe(
-        'Scope to a specific checklist dataset UUID (8-4-4-4-12 hex). Omit to search the GBIF backbone.',
+        'Scope to a specific checklist dataset UUID (8-4-4-4-12 hex). Omit the field to search the GBIF backbone — an empty string is rejected rather than read as no scope, because GBIF answers a blank datasetKey with the unfiltered backbone result.',
       ),
     limit: z
       .number()
@@ -106,15 +108,49 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
     {
       reason: 'invalid_filter',
       code: JsonRpcErrorCode.InvalidParams,
-      when: 'datasetKey is not a UUID, or GBIF rejected another filter value as malformed.',
+      when: 'q or datasetKey was supplied blank or whitespace-only, datasetKey is not an 8-4-4-4-12 hex UUID, or GBIF rejected another filter value as malformed.',
       recovery:
-        'Supply datasetKey as the 8-4-4-4-12 hex UUID of a checklist dataset from gbif_search_datasets with type CHECKLIST, or omit it to search the backbone.',
+        'A blank filter is not a way to skip one — omit the field instead. Otherwise supply datasetKey as the 8-4-4-4-12 hex UUID of a checklist dataset from gbif_search_datasets with type CHECKLIST, or omit it to search the backbone.',
     },
   ],
 
   async handler(input, ctx) {
     ctx.log.info('Searching species taxonomy', { q: input.q, rank: input.rank });
-    if (input.datasetKey?.trim() && !isGbifUuid(input.datasetKey)) {
+    /**
+     * `q` is checked on presence rather than on a non-blank value, because
+     * `/species/search` answers the two blank forms two different ways and neither
+     * is the search that was asked for: `?q=` returns the whole 46,623,747-name
+     * index, `?q=%20%20` returns nothing. One space between the whole backbone and
+     * an empty page is not a distinction a caller can plan around.
+     *
+     * `kingdom`, `family`, and `genus` are deliberately absent from this check.
+     * `/species/search` implements none of the three — each answers identically to
+     * a parameter name invented for the probe (46,623,747 either way, against
+     * `rank=FAMILY`'s 558,588), so no value of theirs narrows anything and a blank
+     * one is not a dropped scope. Guarding them would advertise a validation on
+     * fields that never filter; the inertness is tracked on its own.
+     */
+    const blankFilter = firstBlankFilter({ q: input.q });
+    if (blankFilter) {
+      throw ctx.fail(
+        'invalid_filter',
+        `${blankFilter} was supplied blank. Omit the field to leave it unfiltered — a blank value is not a way to skip a filter.`,
+        { ...ctx.recoveryFor('invalid_filter') },
+      );
+    }
+
+    /**
+     * Checked whenever datasetKey is present, not only when it is non-blank. A
+     * malformed key is rejected locally so the failure carries this tool's recovery
+     * hint instead of a bare upstream 400 that costs a round trip and the retry
+     * budget. The empty string is rejected for the opposite reason: it draws no error
+     * at all — `/species/search?datasetKey=` answers 200 with the unfiltered backbone
+     * result, so a `?.trim()` guard dropped the scope and returned the same 4,972 taxa
+     * under q=Aves that the unscoped call returns, to a caller who believed the search
+     * was confined to one checklist. Letter case stays unchecked: this route resolves a
+     * key either way, unlike `/dataset/search`'s two organization filters.
+     */
+    if (input.datasetKey !== undefined && !isGbifUuid(input.datasetKey)) {
       throw ctx.fail(
         'invalid_filter',
         `datasetKey "${input.datasetKey}" is not a GBIF dataset UUID.`,
@@ -124,13 +160,13 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
 
     const raw = await getGbifService().searchSpecies(
       {
-        ...(input.q?.trim() && { q: input.q }),
+        ...(input.q !== undefined && { q: input.q }),
         ...(input.rank && { rank: input.rank }),
         ...(input.kingdom?.trim() && { kingdom: input.kingdom }),
         ...(input.family?.trim() && { family: input.family }),
         ...(input.genus?.trim() && { genus: input.genus }),
         ...(input.isExtinct !== undefined && { isExtinct: input.isExtinct }),
-        ...(input.datasetKey?.trim() && { datasetKey: input.datasetKey }),
+        ...(input.datasetKey !== undefined && { datasetKey: input.datasetKey }),
         limit: input.limit,
         offset: input.offset,
       },
