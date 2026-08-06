@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.6.0](changelog/0.6.x/0.6.0.md) — 2026-08-06 · ⚠️ Breaking
+
+Occurrence tools now default occurrenceStatus to PRESENT, excluding absence records that previously counted as sightings; occurrenceStatus and iucnRedListCategory are new fields and filters; taxonomicStatus, eventTime, and GADM level3 are surfaced; dataset recordCount now states its wider scope.
+
 ## [0.5.5](changelog/0.5.x/0.5.5.md) — 2026-08-06
 
 gbif_match_species and gbif_bulk_match_species now resolve a synonym to its accepted backbone key via matchedTaxonKey; format() text no longer misstates rendered data on three tools; species-children and classification tools gain pagination and root-taxon guidance; invalid_filter is declared on six surfaces that already threw it.
