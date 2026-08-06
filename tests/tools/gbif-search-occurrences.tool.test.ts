@@ -176,6 +176,113 @@ describe('gbifSearchOccurrences', () => {
     expect(gbifSearchOccurrences.description).not.toMatch(/approximately/i);
   });
 
+  /**
+   * #33 — the cap has no continuation path, so the recovery has to hand back a
+   * technique rather than redirect to an aggregate tool. It carries the wire hint
+   * a `content[]`-only client reads, which is the only place this reaches an agent
+   * that hit the wall.
+   */
+  it('recovers the cap failure with the partition technique, not a redirect to facets', async () => {
+    const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
+    const input = gbifSearchOccurrences.input.parse({ offset: 99702, limit: 300 });
+
+    const err = await gbifSearchOccurrences.handler(input, ctx).catch((e: unknown) => e);
+    const hint = (err as { data: { recovery?: { hint?: string } } }).data.recovery?.hint ?? '';
+
+    expect(hint).toContain('DATASET_KEY');
+    expect(hint).toContain('facetOffset');
+    expect(hint).toMatch(/no cursor or scroll/i);
+    // The exhaustiveness distinction: YEAR loses undated records, datasetKey does not.
+    expect(hint).toMatch(/YEAR/);
+    // A caller must not read the cap as "this server can fetch it another way".
+    expect(hint).toMatch(/GBIF\.org account/);
+    expect(hint).toContain('AWS Open Data');
+    // Partition arithmetic is against the presence-scoped total this tool applies.
+    expect(hint).toContain('PRESENT');
+    // gbif_occurrence_facets takes fewer filters than this tool, so a partition plan
+    // built from a facet call that dropped them covers a wider scope than was asked for.
+    expect(hint).toMatch(/repeating this search's filters/i);
+    expect(hint).toContain('coordinate-uncertainty');
+    expect(hint).toContain('BASIS_OF_RECORD');
+  });
+
+  /**
+   * A dimension is only a usable split axis if this tool can filter on it, so every
+   * facet dimension the hint puts forward as an axis needs a matching input here —
+   * otherwise the recovery hands back a partition no caller could execute. Asserted
+   * as that invariant rather than as a fixed list: #49 added the publishingCountry
+   * filter that had kept PUBLISHING_COUNTRY out of the hint, and the two sides have
+   * to move together or not at all.
+   */
+  it('names only split dimensions this tool can filter on', () => {
+    const hint =
+      gbifSearchOccurrences.errors?.find((e) => e.reason === 'pagination_cap_exceeded')?.recovery ??
+      '';
+    const inputs = Object.keys(gbifSearchOccurrences.input.shape);
+    for (const [dimension, filter] of [
+      ['DATASET_KEY', 'datasetKey'],
+      ['BASIS_OF_RECORD', 'basisOfRecord'],
+      ['PUBLISHING_COUNTRY', 'publishingCountry'],
+    ] as const) {
+      expect(hint).toContain(dimension);
+      expect(inputs).toContain(filter);
+    }
+    /**
+     * SPECIES_KEY appears only in the warning about dimensions that drop records.
+     * taxonKey is not an equivalent filter, so it must never be offered as an axis.
+     */
+    expect(hint).not.toMatch(/split[^.]*SPECIES_KEY/i);
+  });
+
+  /**
+   * #49 — stateProvince became filterable, but records carrying no stateProvince
+   * still fall outside every bucket, so it stays disqualified as a split axis.
+   * "Can filter on it" and "can partition with it" are separate properties, and the
+   * hint has to keep them apart now that the first one changed.
+   */
+  it('keeps STATE_PROVINCE named as lossy even though it is now filterable', () => {
+    const hint =
+      gbifSearchOccurrences.errors?.find((e) => e.reason === 'pagination_cap_exceeded')?.recovery ??
+      '';
+    expect(Object.keys(gbifSearchOccurrences.input.shape)).toContain('stateProvince');
+    expect(hint).toMatch(/MONTH, STATE_PROVINCE, and SPECIES_KEY lose records/);
+  });
+
+  it('announces an unreachable result set on the first page rather than after hundreds', async () => {
+    mockSearchOccurrences.mockResolvedValue({
+      results: [makeOccurrence()],
+      count: 60290950,
+      offset: 0,
+      limit: 20,
+      endOfRecords: false,
+    });
+
+    const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
+    const input = gbifSearchOccurrences.input.parse({ taxonKey: 212, country: 'GB' });
+    await gbifSearchOccurrences.handler(input, ctx);
+
+    const notice = getEnrichment(ctx).notice as string;
+    expect(notice).toContain('60,290,950');
+    expect(notice).toContain('DATASET_KEY');
+    // The presence/absence announcement still rides alongside it.
+    expect(notice).toContain('Absence records');
+  });
+
+  it('leaves the over-cap guidance off a result set paging can finish', async () => {
+    mockSearchOccurrences.mockResolvedValue({
+      results: [makeOccurrence()],
+      count: 100001,
+      offset: 0,
+      limit: 20,
+      endOfRecords: false,
+    });
+
+    const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
+    await gbifSearchOccurrences.handler(gbifSearchOccurrences.input.parse({}), ctx);
+
+    expect(getEnrichment(ctx).notice as string).not.toContain('DATASET_KEY');
+  });
+
   /** #38 — a malformed datasetKey fails locally with guidance rather than as a bare 400. */
   it('rejects a non-UUID datasetKey without issuing a request', async () => {
     const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
@@ -346,6 +453,150 @@ describe('gbifSearchOccurrences', () => {
       expect.not.objectContaining({ datasetKey: expect.anything() }),
       ctx,
     );
+  });
+
+  /**
+   * #49 — PUBLISHING_COUNTRY and STATE_PROVINCE were facet dimensions with no
+   * matching filter on any occurrence tool, so their buckets were a dead end.
+   * Verified live on taxonKey=212 + country=GB + occurrenceStatus=PRESENT
+   * (60,290,950 records): publishingCountry=US narrows to 1,548,928 and
+   * stateProvince=England to 47,672,439.
+   */
+  it('forwards publishingCountry and stateProvince to the service', async () => {
+    mockSearchOccurrences.mockResolvedValue({
+      results: [],
+      count: 508756,
+      offset: 0,
+      limit: 20,
+      endOfRecords: true,
+    });
+
+    const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
+    const input = gbifSearchOccurrences.input.parse({
+      taxonKey: 212,
+      country: 'GB',
+      publishingCountry: 'US',
+      stateProvince: 'England',
+    });
+    await gbifSearchOccurrences.handler(input, ctx);
+
+    expect(mockSearchOccurrences).toHaveBeenCalledWith(
+      expect.objectContaining({
+        country: 'GB',
+        publishingCountry: 'US',
+        stateProvince: 'England',
+      }),
+      ctx,
+    );
+  });
+
+  it('omits publishingCountry and stateProvince when not provided', async () => {
+    mockSearchOccurrences.mockResolvedValue({
+      results: [],
+      count: 0,
+      offset: 0,
+      limit: 20,
+      endOfRecords: true,
+    });
+
+    const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
+    await gbifSearchOccurrences.handler(gbifSearchOccurrences.input.parse({ taxonKey: 212 }), ctx);
+
+    expect(mockSearchOccurrences).toHaveBeenCalledWith(
+      expect.not.objectContaining({ publishingCountry: expect.anything() }),
+      ctx,
+    );
+    expect(mockSearchOccurrences).toHaveBeenCalledWith(
+      expect.not.objectContaining({ stateProvince: expect.anything() }),
+      ctx,
+    );
+  });
+
+  /**
+   * GBIF splits its rejection of a bad country code: `XX` answers HTTP 400, but a
+   * lowercase or alpha-3 form answers 200 with zero records — a confident wrong
+   * number. The vocabulary is closed, so the schema carries a pattern and every
+   * silent case fails locally instead.
+   */
+  it('rejects publishingCountry forms GBIF would answer with a silent zero', () => {
+    for (const bad of ['us', 'USA', 'United States', 'U', 'GBR', '']) {
+      expect(() =>
+        gbifSearchOccurrences.input.parse({ taxonKey: 212, publishingCountry: bad }),
+      ).toThrow();
+    }
+    expect(() =>
+      gbifSearchOccurrences.input.parse({ taxonKey: 212, publishingCountry: 'US' }),
+    ).not.toThrow();
+  });
+
+  /**
+   * stateProvince has no vocabulary to validate against — GBIF stores each dataset's
+   * verbatim string, so no pattern separates a typo from a real value and an
+   * unmatched one returns zero records rather than an error. The guard is therefore
+   * a notice on the empty result, which is the only thing that lets a caller tell a
+   * misspelling from a region that genuinely holds nothing.
+   */
+  it('flags an empty result under a stateProvince filter as possibly a misspelling', async () => {
+    mockSearchOccurrences.mockResolvedValue({
+      results: [],
+      count: 0,
+      offset: 0,
+      limit: 20,
+      endOfRecords: true,
+    });
+
+    const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
+    const input = gbifSearchOccurrences.input.parse({ taxonKey: 212, stateProvince: 'england' });
+    await gbifSearchOccurrences.handler(input, ctx);
+
+    const notice = getEnrichment(ctx).notice as string;
+    expect(notice).toContain('england');
+    expect(notice).toContain('STATE_PROVINCE');
+    expect(notice).toMatch(/case-sensitive/i);
+  });
+
+  it('leaves the stateProvince guidance off a result that matched', async () => {
+    mockSearchOccurrences.mockResolvedValue({
+      results: [makeOccurrence()],
+      count: 47672439,
+      offset: 0,
+      limit: 20,
+      endOfRecords: false,
+    });
+
+    const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
+    const input = gbifSearchOccurrences.input.parse({ taxonKey: 212, stateProvince: 'England' });
+    await gbifSearchOccurrences.handler(input, ctx);
+
+    expect(getEnrichment(ctx).notice as string).not.toMatch(/case-sensitive/i);
+  });
+
+  it('does not fire the stateProvince guidance on an empty result without the filter', async () => {
+    mockSearchOccurrences.mockResolvedValue({
+      results: [],
+      count: 0,
+      offset: 0,
+      limit: 20,
+      endOfRecords: true,
+    });
+
+    const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
+    await gbifSearchOccurrences.handler(gbifSearchOccurrences.input.parse({ taxonKey: 212 }), ctx);
+
+    expect(getEnrichment(ctx).notice as string).not.toMatch(/case-sensitive/i);
+  });
+
+  /**
+   * The two country filters answer different questions and disagree on most records,
+   * so each description has to name the other. A model reading one field in isolation
+   * is exactly how the two get swapped.
+   */
+  it('keeps country and publishingCountry apart in both descriptions', () => {
+    const country = gbifSearchOccurrences.input.shape.country.description ?? '';
+    const publishing = gbifSearchOccurrences.input.shape.publishingCountry.description ?? '';
+    expect(country).toContain('publishingCountry');
+    expect(publishing).toContain('country');
+    expect(publishing).toMatch(/published/i);
   });
 
   // #24: hasCoordinate=false means records-without-coordinates only; omit (not false) returns all

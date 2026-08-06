@@ -151,7 +151,10 @@ describe('gbifCountOccurrences', () => {
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.occurrenceStatus).toBe('ANY');
-    expect(enrichment.notice).toBeUndefined();
+    // ANY applies no filter, so the exclusion announcement drops. What remains is the
+    // over-cap guidance — 2,351,582 is well past what gbif_search_occurrences can page.
+    expect(enrichment.notice as string).not.toContain('Absence records');
+    expect(enrichment.notice as string).toContain('DATASET_KEY');
   });
 
   it('passes ABSENT through and announces that the count is not sightings', async () => {
@@ -169,6 +172,131 @@ describe('gbifCountOccurrences', () => {
       ctx,
     );
     expect(getEnrichment(ctx).notice).toContain('not sightings');
+  });
+
+  /**
+   * #33 — a count is where a caller decides between paging and partitioning, and it
+   * is the cheapest place to learn that paging cannot finish. Below the cap the
+   * guidance would be noise, so it is bounded by the same boundary the search guard
+   * enforces.
+   */
+  it('flags a count paging cannot reach and names the partition route', async () => {
+    mockCountOccurrences.mockResolvedValue(60290950);
+
+    const ctx = createMockContext();
+    const input = gbifCountOccurrences.input.parse({ taxonKey: 212, country: 'GB' });
+    await gbifCountOccurrences.handler(input, ctx);
+
+    const notice = getEnrichment(ctx).notice as string;
+    expect(notice).toContain('60,290,950');
+    expect(notice).toContain('DATASET_KEY');
+    expect(notice).toContain('Absence records');
+  });
+
+  it('leaves a reachable count unflagged', async () => {
+    mockCountOccurrences.mockResolvedValue(100001);
+
+    const ctx = createMockContext();
+    await gbifCountOccurrences.handler(gbifCountOccurrences.input.parse({}), ctx);
+
+    expect(getEnrichment(ctx).notice as string).not.toContain('DATASET_KEY');
+  });
+
+  /**
+   * #49 — the count tool has to accept the same filters as gbif_search_occurrences,
+   * or the two answer different questions on inputs a caller believes are identical.
+   * Both run against /occurrence/search, so the narrowing verified there holds here:
+   * on taxonKey=212 + country=GB + PRESENT, publishingCountry=US gives 1,548,928
+   * against a 60,290,950 baseline.
+   */
+  it('forwards publishingCountry and stateProvince to the service', async () => {
+    mockCountOccurrences.mockResolvedValue(508756);
+
+    const ctx = createMockContext();
+    const input = gbifCountOccurrences.input.parse({
+      taxonKey: 212,
+      country: 'GB',
+      publishingCountry: 'US',
+      stateProvince: 'England',
+    });
+    await gbifCountOccurrences.handler(input, ctx);
+
+    expect(mockCountOccurrences).toHaveBeenCalledWith(
+      expect.objectContaining({
+        country: 'GB',
+        publishingCountry: 'US',
+        stateProvince: 'England',
+      }),
+      ctx,
+    );
+  });
+
+  it('omits publishingCountry and stateProvince when not provided', async () => {
+    mockCountOccurrences.mockResolvedValue(1);
+
+    const ctx = createMockContext();
+    await gbifCountOccurrences.handler(gbifCountOccurrences.input.parse({ taxonKey: 212 }), ctx);
+
+    expect(mockCountOccurrences).toHaveBeenCalledWith(
+      expect.not.objectContaining({ publishingCountry: expect.anything() }),
+      ctx,
+    );
+    expect(mockCountOccurrences).toHaveBeenCalledWith(
+      expect.not.objectContaining({ stateProvince: expect.anything() }),
+      ctx,
+    );
+  });
+
+  /** A lowercase or alpha-3 code counts zero upstream rather than erroring. */
+  it('rejects publishingCountry forms GBIF would answer with a silent zero', () => {
+    for (const bad of ['us', 'USA', 'United States', 'U', 'GBR', '']) {
+      expect(() => gbifCountOccurrences.input.parse({ publishingCountry: bad })).toThrow();
+    }
+    expect(() => gbifCountOccurrences.input.parse({ publishingCountry: 'US' })).not.toThrow();
+  });
+
+  /**
+   * A zero count is the shape that misleads hardest here: it reads as "this region
+   * holds nothing" when it may only mean the verbatim string was misspelled.
+   */
+  it('flags a zero count under a stateProvince filter as possibly a misspelling', async () => {
+    mockCountOccurrences.mockResolvedValue(0);
+
+    const ctx = createMockContext();
+    const input = gbifCountOccurrences.input.parse({ taxonKey: 212, stateProvince: 'england' });
+    await gbifCountOccurrences.handler(input, ctx);
+
+    const notice = getEnrichment(ctx).notice as string;
+    expect(notice).toContain('england');
+    expect(notice).toContain('STATE_PROVINCE');
+    expect(notice).toMatch(/case-sensitive/i);
+  });
+
+  it('leaves the stateProvince guidance off a count that matched', async () => {
+    mockCountOccurrences.mockResolvedValue(47672439);
+
+    const ctx = createMockContext();
+    const input = gbifCountOccurrences.input.parse({ taxonKey: 212, stateProvince: 'England' });
+    await gbifCountOccurrences.handler(input, ctx);
+
+    expect(getEnrichment(ctx).notice as string).not.toMatch(/case-sensitive/i);
+  });
+
+  it('does not fire the stateProvince guidance on a zero count without the filter', async () => {
+    mockCountOccurrences.mockResolvedValue(0);
+
+    const ctx = createMockContext();
+    await gbifCountOccurrences.handler(gbifCountOccurrences.input.parse({ taxonKey: 212 }), ctx);
+
+    expect((getEnrichment(ctx).notice as string) ?? '').not.toMatch(/case-sensitive/i);
+  });
+
+  it('keeps country and publishingCountry apart in both descriptions', () => {
+    const country = gbifCountOccurrences.input.shape.country.description ?? '';
+    const publishing = gbifCountOccurrences.input.shape.publishingCountry.description ?? '';
+    expect(country).toContain('publishingCountry');
+    expect(publishing).toContain('country');
+    expect(publishing).toMatch(/published/i);
   });
 
   it('states the PRESENT default in the schema so tools/list carries it', () => {

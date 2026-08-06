@@ -199,6 +199,42 @@ describe('gbifOccurrenceFacets', () => {
     expect(() => gbifOccurrenceFacets.input.parse({ facet: 'STATE_PROVINCE' })).not.toThrow();
   });
 
+  /**
+   * #33 — the facet enum lists sixteen dimensions and gives no way to tell which of
+   * them partition a scope without loss. That distinction decides whether a caller
+   * splitting an over-cap result set covers it or silently drops records, so it has
+   * to sit in the schema a client reads from `tools/list`, not only in a doc.
+   * Measured: taxonKey 212 + country GB + PRESENT is 60,290,950 records; DATASET_KEY
+   * sums to 60,290,950 across 550 buckets, YEAR to 59,407,400 across 224.
+   */
+  it('names DATASET_KEY as the partition dimension in the facet schema', () => {
+    const described = gbifOccurrenceFacets.input.shape.facet.description ?? '';
+    expect(described).toContain('DATASET_KEY');
+    expect(described).toContain('60,290,950');
+    expect(described).toContain('59,407,400');
+    expect(described).toMatch(/YEAR/);
+    expect(described).toMatch(/occurrenceStatus/);
+  });
+
+  /**
+   * BASIS_OF_RECORD and PUBLISHING_COUNTRY are gap-free too — both sum to the whole
+   * index exactly — so claiming DATASET_KEY is the *only* exhaustive dimension is
+   * false, and it steers a caller away from the two dimensions that actually work as
+   * a second axis on a bucket still over the cap. What separates DATASET_KEY is
+   * cardinality, not coverage.
+   */
+  it('does not claim DATASET_KEY is the only gap-free dimension', () => {
+    const described = gbifOccurrenceFacets.input.shape.facet.description ?? '';
+    expect(described).not.toMatch(/only DATASET_KEY/i);
+    expect(described).toContain('BASIS_OF_RECORD');
+    expect(described).toContain('PUBLISHING_COUNTRY');
+  });
+
+  it('points the tool description at partitioning for over-cap result sets', () => {
+    expect(gbifOccurrenceFacets.description).toContain('100,001');
+    expect(gbifOccurrenceFacets.description).toContain('DATASET_KEY');
+  });
+
   // #25: datasetKey scopes the aggregation and is passed to the service
   it('passes datasetKey to the service', async () => {
     mockGetOccurrenceFacets.mockResolvedValue({
@@ -231,6 +267,129 @@ describe('gbifOccurrenceFacets', () => {
       expect.not.objectContaining({ datasetKey: expect.anything() }),
       ctx,
     );
+  });
+
+  /**
+   * #49 — this tool ranks PUBLISHING_COUNTRY and STATE_PROVINCE buckets, so it has
+   * to take them back as scope filters too, or a caller can drill one level and no
+   * further. Verified live on taxonKey=212 + country=GB + PRESENT: scoping by
+   * publishingCountry=US moves the aggregation's total from 60,290,950 to 1,548,928
+   * and its BASIS_OF_RECORD buckets sum to the narrowed figure.
+   */
+  it('passes publishingCountry and stateProvince to the service', async () => {
+    mockGetOccurrenceFacets.mockResolvedValue({
+      count: 1548928,
+      facets: [
+        { field: 'BASIS_OF_RECORD', counts: [{ name: 'HUMAN_OBSERVATION', count: 1548000 }] },
+      ],
+    });
+
+    const ctx = createMockContext();
+    const input = gbifOccurrenceFacets.input.parse({
+      facet: 'BASIS_OF_RECORD',
+      taxonKey: 212,
+      country: 'GB',
+      publishingCountry: 'US',
+      stateProvince: 'England',
+    });
+    await gbifOccurrenceFacets.handler(input, ctx);
+
+    expect(mockGetOccurrenceFacets).toHaveBeenCalledWith(
+      expect.objectContaining({
+        country: 'GB',
+        publishingCountry: 'US',
+        stateProvince: 'England',
+      }),
+      ctx,
+    );
+  });
+
+  it('omits publishingCountry and stateProvince when not provided', async () => {
+    mockGetOccurrenceFacets.mockResolvedValue({ count: 0, facets: [] });
+
+    const ctx = createMockContext();
+    await gbifOccurrenceFacets.handler(gbifOccurrenceFacets.input.parse({ facet: 'COUNTRY' }), ctx);
+
+    expect(mockGetOccurrenceFacets).toHaveBeenCalledWith(
+      expect.not.objectContaining({ publishingCountry: expect.anything() }),
+      ctx,
+    );
+    expect(mockGetOccurrenceFacets).toHaveBeenCalledWith(
+      expect.not.objectContaining({ stateProvince: expect.anything() }),
+      ctx,
+    );
+  });
+
+  /** A lowercase or alpha-3 code aggregates zero upstream rather than erroring. */
+  it('rejects publishingCountry forms GBIF would answer with a silent zero', () => {
+    for (const bad of ['us', 'USA', 'United States', 'U', 'GBR', '']) {
+      expect(() =>
+        gbifOccurrenceFacets.input.parse({ facet: 'COUNTRY', publishingCountry: bad }),
+      ).toThrow();
+    }
+    expect(() =>
+      gbifOccurrenceFacets.input.parse({ facet: 'COUNTRY', publishingCountry: 'US' }),
+    ).not.toThrow();
+  });
+
+  /**
+   * The empty-facet notice alone says the scope may match nothing — which is true but
+   * does not tell a caller that a verbatim, case-sensitive stateProvince is the
+   * likeliest reason, nor where to get the exact string.
+   */
+  it('flags an empty aggregation under a stateProvince filter as possibly a misspelling', async () => {
+    mockGetOccurrenceFacets.mockResolvedValue({ count: 0, facets: [] });
+
+    const ctx = createMockContext();
+    const input = gbifOccurrenceFacets.input.parse({
+      facet: 'YEAR',
+      taxonKey: 212,
+      stateProvince: 'england',
+    });
+    await gbifOccurrenceFacets.handler(input, ctx);
+
+    const notice = getEnrichment(ctx).notice as string;
+    expect(notice).toContain('england');
+    expect(notice).toContain('STATE_PROVINCE');
+    expect(notice).toMatch(/case-sensitive/i);
+  });
+
+  it('leaves the stateProvince guidance off an aggregation that matched', async () => {
+    mockGetOccurrenceFacets.mockResolvedValue({
+      count: 47672439,
+      facets: [{ field: 'YEAR', counts: [{ name: '2024', count: 100 }] }],
+    });
+
+    const ctx = createMockContext();
+    const input = gbifOccurrenceFacets.input.parse({
+      facet: 'YEAR',
+      taxonKey: 212,
+      stateProvince: 'England',
+    });
+    await gbifOccurrenceFacets.handler(input, ctx);
+
+    expect(getEnrichment(ctx).notice as string).not.toMatch(/case-sensitive/i);
+  });
+
+  /**
+   * #49 — the partition guidance ruled PUBLISHING_COUNTRY out as a split axis on the
+   * grounds that no occurrence tool could filter on it. That is no longer true, and
+   * the facet description is the surface a model reads from `tools/list`.
+   */
+  it('no longer calls PUBLISHING_COUNTRY undrillable in the facet schema', () => {
+    const described = gbifOccurrenceFacets.input.shape.facet.description ?? '';
+    expect(described).not.toMatch(/only BASIS_OF_RECORD/i);
+    expect(described).toMatch(/both have a matching filter/i);
+    // STATE_PROVINCE is filterable now but still drops records, so it stays disqualified.
+    expect(described).toMatch(/MONTH, STATE_PROVINCE, and SPECIES_KEY lose records/);
+  });
+
+  it('keeps country and publishingCountry apart in both descriptions', () => {
+    const country = gbifOccurrenceFacets.input.shape.country.description ?? '';
+    const publishing = gbifOccurrenceFacets.input.shape.publishingCountry.description ?? '';
+    expect(country).toContain('publishingCountry');
+    expect(publishing).toContain('country');
+    expect(publishing).toMatch(/published/i);
   });
 
   // #32: facetOffset pages past the first facetLimit values

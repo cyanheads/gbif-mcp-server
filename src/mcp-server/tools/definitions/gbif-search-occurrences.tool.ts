@@ -7,7 +7,13 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 import { IUCN_RED_LIST_CATEGORY_VALUES, OCCURRENCE_STATUS_VALUES } from '@/services/gbif/types.js';
-import { isGbifUuid, occurrenceStatusNotice } from '../utils.js';
+import {
+  isGbifUuid,
+  occurrenceStatusNotice,
+  overPaginationCapNotice,
+  PAGINATION_CAP,
+  stateProvinceNoMatchNotice,
+} from '../utils.js';
 
 /** Empty-result and pagination-overshoot guidance. */
 function buildNotice(args: {
@@ -25,24 +31,21 @@ function buildNotice(args: {
   return;
 }
 
-/**
- * Largest `offset + limit` GBIF serves. Requests at exactly this sum return 200;
- * one past it returns HTTP 400 `Max offset of 100001 exceeded`. Enforced locally
- * so an over-cap request fails immediately instead of spending the retry budget
- * on a rejection that can never change.
- */
-const PAGINATION_CAP = 100_001;
-
 export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
   title: 'Search Occurrences',
   description:
-    'Search 2.4B+ GBIF occurrence records with Darwin Core filters. Use taxonKey from gbif_match_species ' +
-    'for reliable results — it resolves synonyms automatically. Accepts country (ISO 3166-1 alpha-2), ' +
-    'bounding box (decimalLatitude/decimalLongitude ranges), WKT polygon geometry, year range, month, ' +
+    'Search 3.9B+ GBIF occurrence records with Darwin Core filters. Use taxonKey from gbif_match_species ' +
+    'for reliable results — it resolves synonyms automatically. Accepts country (ISO 3166-1 alpha-2, where ' +
+    "the record was observed), publishingCountry (the publishing organization's country — a different " +
+    'question), stateProvince, bounding box (decimalLatitude/decimalLongitude ranges), WKT polygon ' +
+    'geometry, year range, month, ' +
     'basis of record, coordinate filter, and dataset key. Returns sightings only by default — GBIF also ' +
     'indexes absence records (surveys that looked and found nothing), and occurrenceStatus controls ' +
-    'whether they are included. Pagination is capped at offset+limit=100,001 — ' +
-    'use gbif_occurrence_facets for aggregate counts across large result sets.',
+    'whether they are included. Pagination is capped at offset+limit=100,001 and GBIF offers no ' +
+    'cursor or scroll, so a larger result set is covered only by partitioning it — facet it by ' +
+    'DATASET_KEY with gbif_occurrence_facets and search each datasetKey separately. This server ' +
+    'cannot download a result set in bulk; that needs the GBIF Download API with a GBIF.org ' +
+    'account, or the GBIF snapshot on AWS Open Data.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     taxonKey: z
@@ -60,7 +63,22 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
     country: z
       .string()
       .optional()
-      .describe('ISO 3166-1 alpha-2 country code (e.g., "GB", "US", "DE", "SE").'),
+      .describe(
+        'ISO 3166-1 alpha-2 code of where the occurrence was recorded (e.g., "GB", "US", "DE", "SE"). Not the publisher\'s country — that is publishingCountry, and the two disagree on most records.',
+      ),
+    publishingCountry: z
+      .string()
+      .regex(/^[A-Z]{2}$/)
+      .optional()
+      .describe(
+        'ISO 3166-1 alpha-2 code, uppercase, of the organization that published the record — not where the occurrence was observed, which is country. The two differ constantly: of 60,290,950 records observed in GB, 1,548,928 were published by US organizations. Take a value from a PUBLISHING_COUNTRY facet on gbif_occurrence_facets. Lowercase and alpha-3 forms ("us", "USA") match nothing upstream, which is why only the uppercase two-letter form is accepted here.',
+      ),
+    stateProvince: z
+      .string()
+      .optional()
+      .describe(
+        'State, province, or first-level administrative division, matched as a verbatim string — exact and case-sensitive. GBIF stores what each dataset recorded without normalizing it, so there is no vocabulary to guess from: "England", "England - Greater London", and "Greater London" are three distinct values, and "england" is none of them. Take one from a STATE_PROVINCE facet on gbif_occurrence_facets scoped the same way and pass it back unchanged — an unmatched value returns zero records rather than an error. Records carrying no stateProvince match no value, so this cannot partition a scope.',
+      ),
     decimalLatitude: z
       .string()
       .optional()
@@ -155,7 +173,7 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       .min(0)
       .default(0)
       .describe(
-        'Pagination offset. GBIF serves offset+limit up to 100,001 and rejects anything past it — use gbif_occurrence_facets for aggregate analysis beyond that.',
+        'Pagination offset. GBIF serves offset+limit up to 100,001 and rejects anything past it, with no cursor or scroll to continue from. To reach a result set larger than that, split it into per-datasetKey searches using a DATASET_KEY facet from gbif_occurrence_facets — gap-free and high-cardinality, unlike YEAR, which leaves undated records in no bucket — rather than paging deeper.',
       ),
   }),
   output: z.object({
@@ -266,7 +284,7 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       .string()
       .optional()
       .describe(
-        'Guidance when results are empty, paging overshot, or a presence/absence filter narrowed the result. Absent only when none applies.',
+        'Guidance when results are empty, paging overshot, the match is larger than the pagination cap can reach, or a presence/absence filter narrowed the result. Absent only when none applies.',
       ),
   },
 
@@ -276,7 +294,7 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       code: JsonRpcErrorCode.ValidationError,
       when: 'offset + limit exceeds 100,001, the deepest page GBIF serves.',
       recovery:
-        'Reduce offset or limit so their sum is at most 100,001. Use gbif_occurrence_facets for aggregate analysis across large result sets.',
+        "Reduce offset or limit so their sum is at most 100,001; GBIF exposes no cursor or scroll, so no parameter continues past it. To cover a result set larger than the cap, partition it instead of paging deeper: call gbif_occurrence_facets with facet DATASET_KEY, repeating this search's filters (every occurrence carries exactly one datasetKey, so the buckets cover the scope with no gaps or overlap, and facetOffset pages through them), then re-run this search once per datasetKey. A bucket still over the cap cuts further on BASIS_OF_RECORD or PUBLISHING_COUNTRY — the only other dimensions whose buckets leave no record out, and both have a matching filter here (basisOfRecord, publishingCountry). Do not take YEAR as the first cut — records without a year fall outside every year bucket, and MONTH, STATE_PROVINCE, and SPECIES_KEY lose records the same way, stateProvince included even though this tool can filter on it. Either second cut can also return a single bucket inside one dataset, so compare any sub-split's sum against the bucket total before relying on it. gbif_occurrence_facets takes no scientificName, month, latitude/longitude range, coordinate, cluster, or coordinate-uncertainty filter, so re-apply any of those on each per-datasetKey search rather than expecting the buckets to reflect them. Bucket counts reconcile against the occurrenceStatus in force, PRESENT by default here. Retrieving the set in one piece is not possible through this server: the GBIF Download API requires a GBIF.org account, runs asynchronously, and returns a ZIP archive, and the monthly GBIF Parquet snapshot on AWS Open Data is a bulk dataset — both are routes for the caller to take directly.",
     },
     {
       reason: 'invalid_filter',
@@ -298,7 +316,7 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
     if (input.offset + input.limit > PAGINATION_CAP) {
       throw ctx.fail(
         'pagination_cap_exceeded',
-        `offset + limit (${input.offset + input.limit}) exceeds ${PAGINATION_CAP.toLocaleString('en-US')}, the deepest page GBIF serves. Use gbif_occurrence_facets for aggregate analysis, or reduce offset/limit.`,
+        `offset + limit (${input.offset + input.limit}) exceeds ${PAGINATION_CAP.toLocaleString('en-US')}, the deepest page GBIF serves. Reduce offset/limit, or partition the query by datasetKey and page each part separately.`,
         { ...ctx.recoveryFor('pagination_cap_exceeded') },
       );
     }
@@ -316,6 +334,8 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
         ...(input.taxonKey !== undefined && { taxonKey: input.taxonKey }),
         ...(input.scientificName?.trim() && { scientificName: input.scientificName }),
         ...(input.country?.trim() && { country: input.country }),
+        ...(input.publishingCountry && { publishingCountry: input.publishingCountry }),
+        ...(input.stateProvince?.trim() && { stateProvince: input.stateProvince }),
         ...(input.decimalLatitude?.trim() && { decimalLatitude: input.decimalLatitude }),
         ...(input.decimalLongitude?.trim() && { decimalLongitude: input.decimalLongitude }),
         ...(input.geometry?.trim() && { geometry: input.geometry }),
@@ -380,6 +400,8 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
     });
     const notice = [
       buildNotice({ totalCount, occurrenceCount: occurrences.length, offset }),
+      stateProvinceNoMatchNotice(input.stateProvince, totalCount),
+      overPaginationCapNotice(totalCount),
       occurrenceStatusNotice(input.occurrenceStatus),
     ]
       .filter(Boolean)

@@ -221,6 +221,42 @@ describe('Closed-vocabulary occurrence filters reject before the handler runs', 
   }
 });
 
+/**
+ * #49 — `publishingCountry` draws on the same closed ISO 3166-1 alpha-2 vocabulary,
+ * but GBIF splits its rejections: an unparseable code answers HTTP 400 while a
+ * lowercase or alpha-3 form answers 200 with zero records. The silent half is the
+ * dangerous one, so the schema carries a `^[A-Z]{2}$` pattern and every non-code
+ * string fails before the handler runs. `stateProvince` is deliberately absent from
+ * this suite — it is free text by nature, guarded by a runtime notice instead.
+ */
+describe('publishingCountry rejects non-code strings before the handler runs', () => {
+  const patternInputs = [
+    { name: 'gbif_search_occurrences', def: gbifSearchOccurrences, extra: {} },
+    { name: 'gbif_count_occurrences', def: gbifCountOccurrences, extra: {} },
+    { name: 'gbif_occurrence_facets', def: gbifOccurrenceFacets, extra: { facet: 'COUNTRY' } },
+  ] as const;
+
+  for (const { name, def, extra } of patternInputs) {
+    for (const injection of INJECTION_STRINGS) {
+      it(`${name}.publishingCountry rejects "${injection.slice(0, 24)}"`, () => {
+        expect(() => def.input.parse({ ...extra, publishingCountry: injection })).toThrow();
+      });
+    }
+
+    /**
+     * Declared, not stripped — without this an undeclared key would satisfy every
+     * rejection assertion above on a tool that never had the filter at all.
+     */
+    it(`${name} declares publishingCountry and keeps a valid code`, () => {
+      const parsed = def.input.parse({ ...extra, publishingCountry: 'US' }) as Record<
+        string,
+        unknown
+      >;
+      expect(parsed.publishingCountry).toBe('US');
+    });
+  }
+});
+
 describe('Oversized input handling', () => {
   const mockSearch = vi.fn();
 

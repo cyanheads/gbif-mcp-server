@@ -7,7 +7,7 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 import { IUCN_RED_LIST_CATEGORY_VALUES, OCCURRENCE_STATUS_VALUES } from '@/services/gbif/types.js';
-import { isGbifUuid, occurrenceStatusNotice } from '../utils.js';
+import { isGbifUuid, occurrenceStatusNotice, stateProvinceNoMatchNotice } from '../utils.js';
 
 const BASIS_OF_RECORD_VALUES = [
   'HUMAN_OBSERVATION',
@@ -47,8 +47,11 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
     'facetLimit at facetOffset 0, a later slice of the same ranking past that. No record payloads returned. ' +
     'Core tool for distribution analysis and trend queries: "which countries have the most records ' +
     'for this species?", "how has observation volume changed since 2010?". ' +
-    'Scope the aggregation with taxonKey, country, year, geometry, basisOfRecord, datasetKey, ' +
-    'occurrenceStatus, or iucnRedListCategory filters. Aggregates sightings only by default, ' +
+    'Scope the aggregation with taxonKey, country, publishingCountry, stateProvince, year, ' +
+    'geometry, basisOfRecord, datasetKey, ' +
+    'occurrenceStatus, or iucnRedListCategory filters. Also the way to split a result set too ' +
+    'large for gbif_search_occurrences to page (offset+limit caps at 100,001): facet by ' +
+    'DATASET_KEY, then search each datasetKey on its own. Aggregates sightings only by default, ' +
     'matching gbif_search_occurrences and gbif_count_occurrences; to measure the presence/absence ' +
     'split itself, pass facet OCCURRENCE_STATUS with occurrenceStatus ANY.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
@@ -56,7 +59,7 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
     facet: z
       .enum(FACET_VALUES)
       .describe(
-        'Dimension to aggregate by (e.g., COUNTRY, YEAR, BASIS_OF_RECORD, SPECIES_KEY, OCCURRENCE_STATUS, IUCN_RED_LIST_CATEGORY).',
+        "Dimension to aggregate by (e.g., COUNTRY, YEAR, BASIS_OF_RECORD, SPECIES_KEY, OCCURRENCE_STATUS, IUCN_RED_LIST_CATEGORY). DATASET_KEY is the dimension to split on when a result set is too large to page: every occurrence carries exactly one datasetKey, so its buckets sum to totalOccurrences with no gap and no overlap, and it has the cardinality to cut a large scope into pageable pieces. BASIS_OF_RECORD and PUBLISHING_COUNTRY are gap-free too and both have a matching filter on the occurrence tools, so either can drive a further split of a bucket still too large — but on that same scope they return 9 and 41 buckets against DATASET_KEY's 550, so neither replaces it as the first cut. A dimension a record can lack silently drops that record: faceting one 60,290,950-record scope by YEAR returned 224 buckets summing to 59,407,400, leaving 883,550 undated records in no bucket at all, and MONTH, STATE_PROVINCE, and SPECIES_KEY lose records the same way — stateProvince included, even though the occurrence tools can now filter on it. Sums are comparable only across the same occurrenceStatus scope.",
       ),
     taxonKey: z
       .number()
@@ -67,7 +70,22 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
     country: z
       .string()
       .optional()
-      .describe('ISO 3166-1 alpha-2 country code to scope to one country.'),
+      .describe(
+        "ISO 3166-1 alpha-2 code of where the occurrence was recorded, to scope to one country. Not the publisher's country — that is publishingCountry, and the two disagree on most records.",
+      ),
+    publishingCountry: z
+      .string()
+      .regex(/^[A-Z]{2}$/)
+      .optional()
+      .describe(
+        'ISO 3166-1 alpha-2 code, uppercase, of the organization that published the record — not where the occurrence was observed, which is country. Scope to one publisher country, or pass back a value this tool returned under facet PUBLISHING_COUNTRY to drill into that bucket. Lowercase and alpha-3 forms ("us", "USA") match nothing upstream, which is why only the uppercase two-letter form is accepted here.',
+      ),
+    stateProvince: z
+      .string()
+      .optional()
+      .describe(
+        'State, province, or first-level administrative division, matched as a verbatim string — exact and case-sensitive. Pass back a value this tool returned under facet STATE_PROVINCE rather than a guessed one: GBIF stores what each dataset recorded without normalizing it, so "England", "England - Greater London", and "Greater London" are three distinct values, "england" is none of them, and an unmatched value aggregates zero records rather than erroring.',
+      ),
     year: z
       .string()
       .optional()
@@ -151,7 +169,7 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
       .string()
       .optional()
       .describe(
-        'Guidance when no facet values were returned or a presence/absence filter narrowed the aggregation. Absent only when neither applies.',
+        'Guidance when no facet values were returned, a verbatim stateProvince filter matched nothing, or a presence/absence filter narrowed the aggregation. Absent only when none applies.',
       ),
   },
 
@@ -180,6 +198,8 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
         facet: input.facet,
         ...(input.taxonKey !== undefined && { taxonKey: input.taxonKey }),
         ...(input.country?.trim() && { country: input.country }),
+        ...(input.publishingCountry && { publishingCountry: input.publishingCountry }),
+        ...(input.stateProvince?.trim() && { stateProvince: input.stateProvince }),
         ...(input.year?.trim() && { year: input.year }),
         ...(input.basisOfRecord && { basisOfRecord: input.basisOfRecord }),
         ...(input.geometry?.trim() && { geometry: input.geometry }),
@@ -208,6 +228,7 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
       counts.length === 0
         ? 'No facet values returned. The filter combination may match zero occurrences, or the facet dimension has no data for the given scope.'
         : undefined,
+      stateProvinceNoMatchNotice(input.stateProvince, raw.count ?? 0),
       occurrenceStatusNotice(input.occurrenceStatus),
     ]
       .filter(Boolean)

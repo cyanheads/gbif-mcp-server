@@ -424,4 +424,52 @@ describe('GbifService occurrence filter pass-through', () => {
     expect(params.has('occurrenceStatus')).toBe(false);
     expect(params.has('iucnRedListCategory')).toBe(false);
   });
+
+  /**
+   * #49 — all three occurrence methods hit /occurrence/search, so a filter that
+   * reaches one and not another silently answers a different question on inputs the
+   * caller believes are identical. These assert the parameters leave this process;
+   * that GBIF honors them is a live-API property, verified separately.
+   */
+  it('sends publishingCountry and stateProvince on searchOccurrences', async () => {
+    await service().searchOccurrences(
+      { taxonKey: 212, country: 'GB', publishingCountry: 'US', stateProvince: 'England' },
+      createMockContext(),
+    );
+
+    const params = sentParams();
+    expect(params.get('country')).toBe('GB');
+    expect(params.get('publishingCountry')).toBe('US');
+    expect(params.get('stateProvince')).toBe('England');
+  });
+
+  it('sends publishingCountry and stateProvince on countOccurrences', async () => {
+    await service().countOccurrences(
+      { taxonKey: 212, publishingCountry: 'US', stateProvince: 'England' },
+      createMockContext(),
+    );
+
+    const params = sentParams();
+    expect(params.get('publishingCountry')).toBe('US');
+    expect(params.get('stateProvince')).toBe('England');
+  });
+
+  it('sends publishingCountry and stateProvince on getOccurrenceFacets', async () => {
+    await service().getOccurrenceFacets(
+      { facet: 'DATASET_KEY', publishingCountry: 'US', stateProvince: 'England' },
+      createMockContext(),
+    );
+
+    const params = sentParams();
+    expect(params.get('publishingCountry')).toBe('US');
+    expect(params.get('stateProvince')).toBe('England');
+  });
+
+  it('omits publishingCountry and stateProvince when the caller supplies neither', async () => {
+    await service().searchOccurrences({ taxonKey: 1 }, createMockContext());
+
+    const params = sentParams();
+    expect(params.has('publishingCountry')).toBe(false);
+    expect(params.has('stateProvince')).toBe(false);
+  });
 });

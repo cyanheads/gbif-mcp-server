@@ -1,10 +1,130 @@
 /**
- * @fileoverview Tests for shared tool utilities — stripHtml formatter.
+ * @fileoverview Tests for shared tool utilities — stripHtml formatter, the
+ * over-pagination-cap guidance, and the verbatim stateProvince guidance.
  * @module tests/tools/utils.test
  */
 
 import { describe, expect, it } from 'vitest';
-import { stripHtml } from '@/mcp-server/tools/utils.js';
+import {
+  overPaginationCapNotice,
+  PAGINATION_CAP,
+  stateProvinceNoMatchNotice,
+  stripHtml,
+} from '@/mcp-server/tools/utils.js';
+
+/**
+ * #33 — a result set past the cap has no continuation path in this server, so the
+ * guidance has to carry the whole picture: why paging stops, the partition dimension
+ * that provably covers a scope, the condition under which its buckets add up to the
+ * caller's own total, and the fact that a bulk download is a route the caller takes
+ * elsewhere. A hint that only redirects to facet aggregation reads as "facets
+ * substitute for records", which they do not.
+ */
+describe('overPaginationCapNotice', () => {
+  it('matches the boundary GBIF enforces', () => {
+    expect(PAGINATION_CAP).toBe(100_001);
+  });
+
+  it('stays silent for a result set paging can reach', () => {
+    expect(overPaginationCapNotice(0)).toBeUndefined();
+    expect(overPaginationCapNotice(PAGINATION_CAP)).toBeUndefined();
+  });
+
+  it('fires one record past the boundary', () => {
+    expect(overPaginationCapNotice(PAGINATION_CAP + 1)).toBeDefined();
+  });
+
+  it('names the total, the partition dimension, and the absence of a cursor', () => {
+    const notice = overPaginationCapNotice(60_290_950) as string;
+    expect(notice).toContain('60,290,950');
+    expect(notice).toContain('100,001');
+    expect(notice).toContain('DATASET_KEY');
+    expect(notice).toContain('gbif_occurrence_facets');
+    expect(notice).toMatch(/no cursor or scroll/i);
+  });
+
+  it('states that a bulk download is not available here and names the real routes', () => {
+    const notice = overPaginationCapNotice(60_290_950) as string;
+    expect(notice).toMatch(/GBIF\.org account/);
+    expect(notice).toContain('AWS Open Data');
+  });
+
+  it('ties the bucket arithmetic to the applied occurrenceStatus', () => {
+    expect(overPaginationCapNotice(60_290_950)).toContain('occurrenceStatus');
+  });
+
+  /**
+   * The two tools that emit this notice accept filters gbif_occurrence_facets does
+   * not, so a facet call that drops them aggregates a wider scope than the caller
+   * asked about — a search narrowed by month=6 reports 4,959,328 while its
+   * DATASET_KEY buckets sum to the unnarrowed 60,290,950. Promising the buckets
+   * "sum to exactly this total" unconditionally is wrong precisely where a caller
+   * would use the arithmetic to plan the split.
+   */
+  it('conditions the bucket arithmetic on the facet call repeating the filters', () => {
+    const notice = overPaginationCapNotice(60_290_950) as string;
+    expect(notice).not.toMatch(/sum to exactly this total/i);
+    expect(notice).toMatch(/repeat this query's filters/i);
+    expect(notice).toContain('month');
+    expect(notice).toContain('scientificName');
+  });
+
+  /**
+   * #49 — publishingCountry became a filter on all three occurrence tools, so a
+   * bucket still over the ceiling has a second gap-free axis besides basisOfRecord.
+   * The guidance previously had to name only one, and a stale "only basisOfRecord"
+   * would steer a caller off the axis that now works.
+   */
+  it('names both gap-free second axes now that each has a matching filter', () => {
+    const notice = overPaginationCapNotice(60_290_950) as string;
+    expect(notice).toContain('basisOfRecord');
+    expect(notice).toContain('publishingCountry');
+    expect(notice).not.toMatch(/only the former/i);
+  });
+});
+
+/**
+ * #49 — stateProvince is the one occurrence filter with no vocabulary behind it.
+ * GBIF matches the verbatim string exactly and case-sensitively and answers a value
+ * it does not hold with 200 and zero records, so no pattern can guard it and a zero
+ * is ambiguous in a way no other filter's is: measured on one scope, `England`
+ * matches 47,672,439 records while `england` and `ENGLAND` each match none.
+ */
+describe('stateProvinceNoMatchNotice', () => {
+  it('stays silent when the filter was not applied', () => {
+    expect(stateProvinceNoMatchNotice(undefined, 0)).toBeUndefined();
+    expect(stateProvinceNoMatchNotice('', 0)).toBeUndefined();
+    expect(stateProvinceNoMatchNotice('   ', 0)).toBeUndefined();
+  });
+
+  it('stays silent when the value matched records', () => {
+    expect(stateProvinceNoMatchNotice('England', 47_672_439)).toBeUndefined();
+    expect(stateProvinceNoMatchNotice('England', 1)).toBeUndefined();
+  });
+
+  it('fires only where the result is empty and the filter was applied', () => {
+    expect(stateProvinceNoMatchNotice('england', 0)).toBeDefined();
+  });
+
+  it('echoes the value, names the match semantics, and points at the facet', () => {
+    const notice = stateProvinceNoMatchNotice('england', 0) as string;
+    expect(notice).toContain('"england"');
+    expect(notice).toMatch(/verbatim/i);
+    expect(notice).toMatch(/case-sensitive/i);
+    expect(notice).toContain('STATE_PROVINCE');
+    expect(notice).toContain('gbif_occurrence_facets');
+  });
+
+  /**
+   * The whole point is separating a typo from an empty region. A notice that only
+   * said "no records matched" would restate what the caller can already see.
+   */
+  it('says the zero does not distinguish a typo from an empty region', () => {
+    const notice = stateProvinceNoMatchNotice('NotARealPlace', 0) as string;
+    expect(notice).toMatch(/does not distinguish/i);
+    expect(notice).toMatch(/instead of an error|rather than an error/i);
+  });
+});
 
 describe('stripHtml', () => {
   it('removes simple HTML tags', () => {

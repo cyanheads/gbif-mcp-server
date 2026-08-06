@@ -7,17 +7,25 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 import { IUCN_RED_LIST_CATEGORY_VALUES, OCCURRENCE_STATUS_VALUES } from '@/services/gbif/types.js';
-import { isGbifUuid, occurrenceStatusNotice } from '../utils.js';
+import {
+  isGbifUuid,
+  occurrenceStatusNotice,
+  overPaginationCapNotice,
+  stateProvinceNoMatchNotice,
+} from '../utils.js';
 
 export const gbifCountOccurrences = tool('gbif_count_occurrences', {
   title: 'Count Occurrences',
   description:
     'Count occurrences matching a taxon + location filter without fetching records. ' +
     'Use for quick totals ("how many Aves records in Sweden?") or before deciding whether ' +
-    'to paginate a full search. Accepts taxonKey, country, isGeoreferenced, datasetKey, year, ' +
+    'to paginate a full search. Accepts taxonKey, country, publishingCountry, stateProvince, ' +
+    'isGeoreferenced, datasetKey, year, ' +
     'occurrenceStatus, and iucnRedListCategory. Counts sightings only by default, matching ' +
     'gbif_search_occurrences — GBIF also indexes absence records, and for some taxa they are ' +
-    'the overwhelming majority.',
+    'the overwhelming majority. A count above 100,001 is the signal to partition rather than ' +
+    'page: gbif_search_occurrences cannot reach past that offset, so split the query by ' +
+    'DATASET_KEY via gbif_occurrence_facets and search each dataset separately.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     taxonKey: z
@@ -26,7 +34,25 @@ export const gbifCountOccurrences = tool('gbif_count_occurrences', {
       .describe(
         'GBIF backbone taxon key from gbif_match_species. Matches the given taxon and all descendant taxa (subspecies, varieties, etc.).',
       ),
-    country: z.string().optional().describe('ISO 3166-1 alpha-2 country code (e.g., "GB", "US").'),
+    country: z
+      .string()
+      .optional()
+      .describe(
+        'ISO 3166-1 alpha-2 code of where the occurrence was recorded (e.g., "GB", "US"). Not the publisher\'s country — that is publishingCountry, and the two disagree on most records.',
+      ),
+    publishingCountry: z
+      .string()
+      .regex(/^[A-Z]{2}$/)
+      .optional()
+      .describe(
+        'ISO 3166-1 alpha-2 code, uppercase, of the organization that published the record — not where the occurrence was observed, which is country. The two differ constantly: of 60,290,950 records observed in GB, 1,548,928 were published by US organizations. Take a value from a PUBLISHING_COUNTRY facet on gbif_occurrence_facets. Lowercase and alpha-3 forms ("us", "USA") match nothing upstream, which is why only the uppercase two-letter form is accepted here.',
+      ),
+    stateProvince: z
+      .string()
+      .optional()
+      .describe(
+        'State, province, or first-level administrative division, matched as a verbatim string — exact and case-sensitive. GBIF stores what each dataset recorded without normalizing it, so there is no vocabulary to guess from: "England", "England - Greater London", and "Greater London" are three distinct values, and "england" is none of them. Take one from a STATE_PROVINCE facet on gbif_occurrence_facets scoped the same way and pass it back unchanged — an unmatched value counts zero rather than erroring.',
+      ),
     isGeoreferenced: z
       .boolean()
       .optional()
@@ -71,7 +97,7 @@ export const gbifCountOccurrences = tool('gbif_count_occurrences', {
       .string()
       .optional()
       .describe(
-        'Guidance when a presence/absence filter narrowed the count. Absent when occurrenceStatus is ANY.',
+        'Guidance when the count is zero under a verbatim stateProvince filter, larger than gbif_search_occurrences can page to, or narrowed by a presence/absence filter. Absent when none applies.',
       ),
   },
 
@@ -105,6 +131,8 @@ export const gbifCountOccurrences = tool('gbif_count_occurrences', {
       {
         ...(input.taxonKey !== undefined && { taxonKey: input.taxonKey }),
         ...(input.country?.trim() && { country: input.country }),
+        ...(input.publishingCountry && { publishingCountry: input.publishingCountry }),
+        ...(input.stateProvince?.trim() && { stateProvince: input.stateProvince }),
         ...(input.isGeoreferenced !== undefined && { isGeoreferenced: input.isGeoreferenced }),
         ...(input.datasetKey?.trim() && { datasetKey: input.datasetKey }),
         ...(input.year?.trim() && { year: input.year }),
@@ -115,7 +143,13 @@ export const gbifCountOccurrences = tool('gbif_count_occurrences', {
     );
 
     ctx.enrich({ occurrenceStatus: input.occurrenceStatus });
-    const notice = occurrenceStatusNotice(input.occurrenceStatus);
+    const notice = [
+      stateProvinceNoMatchNotice(input.stateProvince, count),
+      overPaginationCapNotice(count),
+      occurrenceStatusNotice(input.occurrenceStatus),
+    ]
+      .filter(Boolean)
+      .join(' ');
     if (notice) ctx.enrich.notice(notice);
 
     return { count };
