@@ -21,7 +21,8 @@
       "env": {
         "MCP_TRANSPORT_TYPE": "stdio",
         "MCP_AUTH_MODE": "none",
-        "NODE_ENV": "production"
+        "NODE_ENV": "production",
+        "GBIF_USER_AGENT": "${user_config.gbif_user_agent}"
       }
     }
   },
@@ -32,5 +33,12 @@
   },
   "tools_generated": true,
   "prompts_generated": true,
-  "user_config": {}
+  "user_config": {
+    "gbif_user_agent": {
+      "type": "string",
+      "title": "GBIF User-Agent",
+      "description": "Sent as the User-Agent header on every GBIF API request. GBIF asks integrators to identify themselves with a contact URL or email so it can get in touch about problem traffic. Leave blank to send the server name, version, and repository URL.",
+      "required": false
+    }
+  }
 }

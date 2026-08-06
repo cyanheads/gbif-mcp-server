@@ -37,6 +37,26 @@
           "format": "string",
           "isRequired": false,
           "default": "info"
+        },
+        {
+          "name": "GBIF_BASE_URL",
+          "description": "Base URL every GBIF API request is built from. Override to route through a proxy or a mirror of the GBIF v1 API.",
+          "format": "string",
+          "isRequired": false,
+          "default": "https://api.gbif.org/v1"
+        },
+        {
+          "name": "GBIF_REQUEST_TIMEOUT_MS",
+          "description": "Milliseconds a single GBIF API request may take before it is aborted. Aborted attempts fall to the service's retry policy.",
+          "format": "string",
+          "isRequired": false,
+          "default": "10000"
+        },
+        {
+          "name": "GBIF_USER_AGENT",
+          "description": "Sent as the User-Agent header on every GBIF API request. GBIF asks integrators to identify themselves with a contact URL or email. Unset or blank sends the server name, version, and repository URL.",
+          "format": "string",
+          "isRequired": false
         }
       ],
       "transport": {
@@ -94,6 +114,26 @@
           "format": "string",
           "isRequired": false,
           "default": "info"
+        },
+        {
+          "name": "GBIF_BASE_URL",
+          "description": "Base URL every GBIF API request is built from. Override to route through a proxy or a mirror of the GBIF v1 API.",
+          "format": "string",
+          "isRequired": false,
+          "default": "https://api.gbif.org/v1"
+        },
+        {
+          "name": "GBIF_REQUEST_TIMEOUT_MS",
+          "description": "Milliseconds a single GBIF API request may take before it is aborted. Aborted attempts fall to the service's retry policy.",
+          "format": "string",
+          "isRequired": false,
+          "default": "10000"
+        },
+        {
+          "name": "GBIF_USER_AGENT",
+          "description": "Sent as the User-Agent header on every GBIF API request. GBIF asks integrators to identify themselves with a contact URL or email. Unset or blank sends the server name, version, and repository URL.",
+          "format": "string",
+          "isRequired": false
         }
       ],
       "transport": {

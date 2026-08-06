@@ -38,7 +38,7 @@ gbif-biodiversity-mcp-server exposes the Global Biodiversity Information Facilit
 
 Primary users are ecologists, conservation biologists, environmental assessors, and researchers who need to query where a species has been observed, how observation volumes vary by geography or time, or what the accepted taxonomy is for a given name.
 
-The server is read-only. All endpoints are public with no auth required for basic access. An optional free GBIF API key raises rate limits for heavier usage.
+The server is read-only. Every endpoint it calls is public and takes no credentials — GBIF issues no API key.
 
 ---
 
@@ -467,7 +467,7 @@ Typical agent task: "What vertebrate species have been recorded in a 50km radius
 - **Backbone vs. checklist taxon keys.** GBIF has a single backbone taxonomy (`d7dddbf4-2cf0-4f39-9b2a-bb099caae36c`) and many secondary checklists. Occurrence search works only with backbone keys (the `nubKey`). The `gbif_match_species` tool always returns backbone keys.
 - **Name matching confidence.** Below confidence ~80, matches should be treated with caution. The `confidence` field is surfaced in the output. The `/species/match` endpoint does not return an `alternatives` array — callers with low-confidence matches should retry with broader or different input (e.g., remove `strict`, try a higher-rank name).
 - **Occurrence record sparsity.** Many fields in Darwin Core are optional. Coordinates, collector name, collection code, and locality may be absent, especially in older or museum-digitized records. Output schemas reflect this — most fields are optional.
-- **GBIF API key is optional but beneficial.** Without a key, requests are anonymized and may be throttled under sustained load. The server communicates this at startup if no key is configured.
+- **Rate limiting is load-based, not credential-tiered.** GBIF throttles search traffic according to its own server load and returns 429 when a caller exceeds it; no credential raises the ceiling. Requests carry an identifying `User-Agent` (overridable via `GBIF_USER_AGENT`) so GBIF can make contact about problem traffic.
 - **WKT geometry coordinate order.** GBIF expects `longitude latitude` order in WKT (matching GeoJSON convention, not GML). This is noted in the `geometry` parameter description.
 
 ---
@@ -513,7 +513,7 @@ Add `facet=FIELD_NAME` to occurrence search, set `limit=0` to skip record fetchi
 
 ### Auth
 
-No auth required for read access. To raise rate limits, supply the GBIF API key as HTTP Basic Auth with the key as the username and an empty password (`user:` format). Query-parameter auth is not supported on read endpoints. The API doesn't enforce strict limits without a key but may throttle under sustained anonymous load.
+None. GBIF issues no API key, and the read endpoints this server calls take no credentials. GBIF's HTTP Basic auth applies only to occurrence downloads and registry writes, neither of which is in this surface. Search traffic is throttled by GBIF's server load and returns 429 when it exceeds the current ceiling.
 
 ### Error shapes
 

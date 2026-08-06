@@ -5,8 +5,8 @@ Global biodiversity occurrence records, taxonomy, and species data via the GBIF 
 ## Data source
 
 - **GBIF API v1** — 2.4B+ species occurrence records worldwide
-- **Auth**: Optional free key for higher rate limits (works without)
-- **Rate limits**: Generous without key, higher with
+- **Auth**: None — the read endpoints are public and GBIF issues no API key
+- **Rate limits**: Throttled by GBIF's server load, returning 429; no credential raises the ceiling
 
 ## Why it earns its keep
 

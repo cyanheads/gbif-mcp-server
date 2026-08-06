@@ -22,19 +22,28 @@ import type {
   RawSpeciesSearchResponse,
 } from './types.js';
 
+/**
+ * Contact point advertised in the default User-Agent. GBIF asks integrators to
+ * identify themselves so it can reach the maintainer about problem traffic.
+ */
+const REPOSITORY_URL = 'https://github.com/cyanheads/gbif-biodiversity-mcp-server';
+
 // ─── Service class ─────────────────────────────────────────────────────────────
 
 export class GbifService {
   private readonly baseUrl: string;
   private readonly timeoutMs: number;
+  private readonly userAgent: string;
 
   constructor(
-    _config: AppConfig,
+    config: AppConfig,
     _storage: StorageService,
-    opts: { baseUrl: string; timeoutMs: number },
+    opts: { baseUrl: string; timeoutMs: number; userAgent?: string | undefined },
   ) {
     this.baseUrl = opts.baseUrl.replace(/\/$/, '');
     this.timeoutMs = opts.timeoutMs;
+    this.userAgent =
+      opts.userAgent ?? `${config.mcpServerName}/${config.mcpServerVersion} (+${REPOSITORY_URL})`;
   }
 
   // ─── Private helpers ─────────────────────────────────────────────────────────
@@ -62,7 +71,7 @@ export class GbifService {
         ctx.signal.addEventListener('abort', onAbort, { once: true });
         try {
           const response = await fetch(url, {
-            headers: { Accept: 'application/json' },
+            headers: { Accept: 'application/json', 'User-Agent': this.userAgent },
             signal: controller.signal,
           });
           if (!response.ok) {
@@ -321,7 +330,7 @@ let _service: GbifService | undefined;
 export function initGbifService(
   config: AppConfig,
   storage: StorageService,
-  opts: { baseUrl: string; timeoutMs: number },
+  opts: { baseUrl: string; timeoutMs: number; userAgent?: string | undefined },
 ): void {
   _service = new GbifService(config, storage, opts);
 }

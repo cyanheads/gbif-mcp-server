@@ -31,7 +31,7 @@ await createApp({
   name: 'gbif-biodiversity-mcp-server',
   title: 'gbif-biodiversity-mcp-server',
   instructions:
-    'Use the gbif_* tools to query species taxonomy, occurrences, datasets, and publishers via the GBIF API. Keyless; an optional API key only raises rate limits. Resolve any name with gbif_match_species first — it returns the backbone taxonKey the occurrence tools expect and resolves synonyms, unlike the raw scientificName filter. Countries use ISO 3166-1 alpha-2; datasets and publishers are keyed by UUID, occurrences by integer key. Occurrence paging caps at offset+limit ≈ 100,000 — switch to gbif_occurrence_facets for larger aggregate analysis.',
+    'Use the gbif_* tools to query species taxonomy, occurrences, datasets, and publishers via the GBIF API. Keyless — these endpoints need no credentials. Resolve any name with gbif_match_species first — it returns the backbone taxonKey the occurrence tools expect and resolves synonyms, unlike the raw scientificName filter. Countries use ISO 3166-1 alpha-2; datasets and publishers are keyed by UUID, occurrences by integer key. Occurrence paging caps at offset+limit ≈ 100,000 — switch to gbif_occurrence_facets for larger aggregate analysis.',
   tools: [
     gbifMatchSpecies,
     gbifBulkMatchSpecies,
@@ -56,6 +56,7 @@ await createApp({
     initGbifService(core.config, core.storage, {
       baseUrl: cfg.baseUrl,
       timeoutMs: cfg.requestTimeoutMs,
+      userAgent: cfg.userAgent,
     });
   },
 });
