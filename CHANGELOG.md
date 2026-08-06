@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.5.4](changelog/0.5.x/0.5.4.md) — 2026-08-06
+
+Upstream 400s now carry a reason and recovery hint with GBIF's explanation folded into the message; six tools plus the dataset resource validate UUID-shaped keys before any request; recordCount is populated for OCCURRENCE datasets; the pagination guard matches GBIF's real 100,001 boundary.
+
 ## [0.5.3](changelog/0.5.x/0.5.3.md) — 2026-08-06
 
 Every gbif_* tool now declares openWorldHint true, matching its live GBIF API calls. Requests carry an identifying User-Agent (overridable via GBIF_USER_AGENT), and the docs no longer claim GBIF issues an API key. mcp-ts-core bumped to ^0.11.1, typescript to ^7.0.2.
