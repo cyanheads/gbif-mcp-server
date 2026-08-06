@@ -201,33 +201,41 @@ describe('Secret non-leakage', () => {
     vi.clearAllMocks();
   });
 
-  it('gbif_count_occurrences error does not expose env vars', async () => {
+  /**
+   * The handlers have no try/catch — an upstream failure propagates untouched
+   * and the framework classifies and masks it. So the testable invariant is
+   * identity: the thrown value is the service's own error, with nothing about
+   * the request or environment attached on the way out. Asserting only that a
+   * benign fixture message lacks credential-shaped text would pass against any
+   * implementation.
+   */
+  it('gbif_count_occurrences propagates the upstream error without attaching config', async () => {
+    const upstream = new Error('Service error from upstream');
     vi.mocked(getGbifService).mockReturnValue({
-      countOccurrences: vi.fn().mockRejectedValue(new Error('Service error from upstream')),
+      countOccurrences: vi.fn().mockRejectedValue(upstream),
     } as never);
 
     const ctx = createMockContext();
     const input = gbifCountOccurrences.input.parse({ taxonKey: 1 });
 
     const err = await gbifCountOccurrences.handler(input, ctx).catch((e: unknown) => e);
-    const errStr = JSON.stringify(err);
-
-    // Confirm no env var names appear in error output
-    expect(errStr).not.toMatch(/GBIF_API_KEY|API_KEY|SECRET|PASSWORD|TOKEN/i);
+    expect(err).toBe(upstream);
+    expect(JSON.stringify({ message: (err as Error).message, ...(err as object) })).not.toMatch(
+      /API_KEY|SECRET|PASSWORD|TOKEN/i,
+    );
   });
 
-  it('gbif_search_occurrences error does not leak internal paths', async () => {
+  it('gbif_search_occurrences propagates the upstream error without appending env values', async () => {
+    const upstream = new Error('Internal failure at /home/app/src');
     vi.mocked(getGbifService).mockReturnValue({
-      searchOccurrences: vi.fn().mockRejectedValue(new Error('Internal failure at /home/app/src')),
+      searchOccurrences: vi.fn().mockRejectedValue(upstream),
     } as never);
 
     const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
     const input = gbifSearchOccurrences.input.parse({});
 
     const err = await gbifSearchOccurrences.handler(input, ctx).catch((e: unknown) => e);
-    // The error should propagate as-is (the framework handles classification/masking)
-    // We just verify no credential-looking strings are appended by the handler itself
-    const errStr = String((err as Error).message ?? err);
-    expect(errStr).not.toMatch(/[A-Z_]{8,}=\S+/); // no VAR=value patterns
+    expect(err).toBe(upstream);
+    expect((err as Error).message).toBe('Internal failure at /home/app/src');
   });
 });
