@@ -4,7 +4,9 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
+import { isGbifUuid } from '../utils.js';
 
 const BASIS_OF_RECORD_VALUES = [
   'HUMAN_OBSERVATION',
@@ -77,7 +79,7 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
       .string()
       .optional()
       .describe(
-        'Scope the aggregation to a single dataset by its GBIF dataset UUID. Obtain one from gbif_search_datasets, gbif_get_dataset, a DATASET_KEY facet, or the datasetKey field on an occurrence record.',
+        'Scope the aggregation to a single dataset by its GBIF dataset UUID (8-4-4-4-12 hex). Obtain one from gbif_search_datasets, gbif_get_dataset, a DATASET_KEY facet, or the datasetKey field on an occurrence record.',
       ),
     facetLimit: z
       .number()
@@ -123,8 +125,26 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
       .describe('Guidance when no facet values were returned. Absent when counts are non-empty.'),
   },
 
+  errors: [
+    {
+      reason: 'invalid_filter',
+      code: JsonRpcErrorCode.InvalidParams,
+      when: 'datasetKey is not a UUID, or GBIF rejected the geometry or year scope as malformed.',
+      recovery:
+        'The message names the rejected value. Correct that one scope filter: geometry is a closed WKT ring in longitude latitude order, year is a single year or "min,max", and datasetKey is a UUID from gbif_search_datasets.',
+    },
+  ],
+
   async handler(input, ctx) {
     ctx.log.info('Fetching occurrence facets', { facet: input.facet, taxonKey: input.taxonKey });
+    if (input.datasetKey?.trim() && !isGbifUuid(input.datasetKey)) {
+      throw ctx.fail(
+        'invalid_filter',
+        `datasetKey "${input.datasetKey}" is not a GBIF dataset UUID.`,
+        { ...ctx.recoveryFor('invalid_filter') },
+      );
+    }
+
     const raw = await getGbifService().getOccurrenceFacets(
       {
         facet: input.facet,

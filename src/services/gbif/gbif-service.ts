@@ -5,7 +5,7 @@
 
 import type { Context } from '@cyanheads/mcp-ts-core';
 import type { AppConfig } from '@cyanheads/mcp-ts-core/config';
-import { serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
+import { McpError, serviceUnavailable, timeout } from '@cyanheads/mcp-ts-core/errors';
 import type { StorageService } from '@cyanheads/mcp-ts-core/storage';
 import { httpErrorFromResponse, withRetry } from '@cyanheads/mcp-ts-core/utils';
 import type {
@@ -27,6 +27,68 @@ import type {
  * identify themselves so it can reach the maintainer about problem traffic.
  */
 const REPOSITORY_URL = 'https://github.com/cyanheads/gbif-biodiversity-mcp-server';
+
+/** GBIF serves an HTML page instead of JSON when it rate-limits or falls over. */
+const HTML_RESPONSE = /^\s*<(!DOCTYPE\s+html|html[\s>])/i;
+
+/**
+ * Deadline for the secondary occurrence count that fills a dataset's record
+ * count. Shorter than the configured request timeout because the count is
+ * supplementary — the dataset record is already in hand and must not wait long
+ * for a field that is allowed to be absent.
+ */
+const RECORD_COUNT_TIMEOUT_MS = 3_000;
+
+/**
+ * Recovery guidance for a GBIF rejection of a supplied value. GBIF names the
+ * offending value in its response body, so the hint points at that value and at
+ * the tools that produce well-formed ones. A tool that declares an
+ * `invalid_filter` contract overrides this with its own wording, since
+ * `ctx.recoveryFor` resolves against the calling definition's contract.
+ */
+const INVALID_FILTER_RECOVERY =
+  'GBIF rejected one of the supplied values and the quoted explanation names it. Correct that ' +
+  'parameter and retry — dataset and organization keys are UUIDs from gbif_search_datasets or ' +
+  'gbif_search_publishers, and taxonKey comes from gbif_match_species.';
+
+/**
+ * Converts a non-2xx GBIF response into an `McpError`.
+ *
+ * Two departures from the raw framework helper:
+ *
+ * - **The request URL is dropped.** `httpErrorFromResponse` seeds `data.url` from
+ *   the response, which would put the full upstream endpoint and every query
+ *   parameter on the wire. Only that key is removed; `status`, `body`, and
+ *   `retryAfter` stay, because `withRetry` and the callers classify on them.
+ * - **GBIF's explanation is folded into the message.** It otherwise reaches only
+ *   `structuredContent.error.data.body`, leaving `content[]` clients with the bare
+ *   status. An HTML body (a rate-limit or outage page) is left out of the message.
+ *
+ * A 400 is a rejected input value rather than an outage, so it also carries the
+ * `invalid_filter` contract reason and a recovery hint.
+ */
+async function gbifHttpError(response: Response, ctx: Context): Promise<McpError> {
+  const error = await httpErrorFromResponse(response, { service: 'GBIF API' });
+  const data: Record<string, unknown> = { ...error.data };
+  delete data.url;
+
+  const body = typeof data.body === 'string' ? data.body.trim() : '';
+  const explanation = body && !HTML_RESPONSE.test(body) ? body : '';
+
+  return new McpError(
+    error.code,
+    explanation ? `${error.message} ${explanation}` : error.message,
+    response.status === 400
+      ? {
+          ...data,
+          reason: 'invalid_filter',
+          recovery: { hint: INVALID_FILTER_RECOVERY },
+          ...ctx.recoveryFor('invalid_filter'),
+        }
+      : data,
+    { cause: error },
+  );
+}
 
 // ─── Service class ─────────────────────────────────────────────────────────────
 
@@ -61,11 +123,28 @@ export class GbifService {
     return url.toString();
   }
 
-  private getJson<T>(url: string, ctx: Context): Promise<T> {
+  private getJson<T>(
+    url: string,
+    ctx: Context,
+    opts: { maxRetries?: number; timeoutMs?: number } = {},
+  ): Promise<T> {
+    const timeoutMs = opts.timeoutMs ?? this.timeoutMs;
     return withRetry(
       async () => {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
+        /**
+         * Abort with a `TimeoutError` DOMException rather than a bare `abort()`.
+         * `fetch` rejects with the abort *reason*, so a bare abort surfaces a raw
+         * `AbortError` that names neither GBIF nor the deadline and reaches the
+         * client with no structured data. Holding the instance also keeps our own
+         * deadline distinguishable from a caller cancellation on `ctx.signal`,
+         * which aborts the same controller.
+         */
+        const timeoutReason = new DOMException(
+          `GBIF API request timed out after ${timeoutMs}ms.`,
+          'TimeoutError',
+        );
+        const timeoutId = setTimeout(() => controller.abort(timeoutReason), timeoutMs);
         // Propagate ctx.signal cancellation; once:true cleans up after each attempt
         const onAbort = () => controller.abort();
         ctx.signal.addEventListener('abort', onAbort, { once: true });
@@ -75,15 +154,27 @@ export class GbifService {
             signal: controller.signal,
           });
           if (!response.ok) {
-            throw await httpErrorFromResponse(response, { service: 'GBIF API', data: { url } });
+            throw await gbifHttpError(response, ctx);
           }
           const text = await response.text();
-          if (/^\s*<(!DOCTYPE\s+html|html[\s>])/i.test(text)) {
+          if (HTML_RESPONSE.test(text)) {
             throw serviceUnavailable(
               'GBIF API returned HTML — likely rate-limited or unavailable.',
             );
           }
           return JSON.parse(text) as T;
+        } catch (err) {
+          // Identity-match the reason, not the rejection value: an abort reason may
+          // be any type, so an `instanceof Error` gate would drop the timeout into
+          // the unclassified path it is here to escape.
+          if (controller.signal.reason === timeoutReason) {
+            throw timeout(
+              `GBIF API request timed out after ${timeoutMs}ms.`,
+              { timeoutMs },
+              { cause: err },
+            );
+          }
+          throw err;
         } finally {
           clearTimeout(timeoutId);
           ctx.signal.removeEventListener('abort', onAbort);
@@ -93,6 +184,7 @@ export class GbifService {
         operation: 'GbifService.getJson',
         baseDelayMs: 1000,
         signal: ctx.signal,
+        ...(opts.maxRetries !== undefined && { maxRetries: opts.maxRetries }),
       },
     );
   }
@@ -299,6 +391,31 @@ export class GbifService {
     const url = this.buildUrl(`/dataset/${datasetKey}`);
     ctx.log.debug('Fetching dataset record', { datasetKey });
     return this.getJson<RawDatasetRecord>(url, ctx);
+  }
+
+  /**
+   * Indexed occurrence count for one dataset — the record count `/dataset/{key}`
+   * never supplies but `/dataset/search` does, so a detail lookup can report the
+   * same figure the list tool reports.
+   *
+   * Supplementary to the dataset record already in hand, so it is bounded (no
+   * retries, short deadline) and degrades to `undefined` on any failure instead
+   * of turning a successful dataset lookup into an error.
+   */
+  async getDatasetOccurrenceCount(datasetKey: string, ctx: Context): Promise<number | undefined> {
+    const url = this.buildUrl('/occurrence/count', { datasetKey });
+    try {
+      return await this.getJson<number>(url, ctx, {
+        maxRetries: 0,
+        timeoutMs: RECORD_COUNT_TIMEOUT_MS,
+      });
+    } catch (err) {
+      ctx.log.debug('Dataset occurrence count unavailable', {
+        datasetKey,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
   }
 
   // ─── Publishers/Organizations ─────────────────────────────────────────────────

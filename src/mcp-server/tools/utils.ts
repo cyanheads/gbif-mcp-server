@@ -3,11 +3,55 @@
  * @module mcp-server/tools/utils
  */
 
+import type { Context } from '@cyanheads/mcp-ts-core';
+import { getGbifService } from '@/services/gbif/gbif-service.js';
 import type {
   RawContact,
+  RawDatasetRecord,
   RawGeographicCoverage,
   RawTemporalCoverage,
 } from '@/services/gbif/types.js';
+
+/** Canonical 8-4-4-4-12 hex UUID — the form every GBIF dataset and organization key takes. */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * True when `value` is a well-formed GBIF registry key (dataset, organization).
+ *
+ * Callers check before issuing a request because GBIF handles a malformed key two
+ * incompatible ways: most endpoints answer HTTP 400 `Invalid UUID string`, but
+ * `/occurrence/count` answers 200 with a count of 0 — a wrong answer rather than
+ * an error. Rejecting locally makes both cases one explicit failure.
+ *
+ * Matched without trimming, because callers forward the value they were given
+ * rather than a normalized copy: accepting surrounding whitespace here would wave
+ * through a key that still reaches `/occurrence/count` malformed, restoring the
+ * silent zero this check exists to prevent.
+ */
+export function isGbifUuid(value: string): boolean {
+  return UUID.test(value);
+}
+
+/**
+ * Record count for a dataset detail response, shared by `gbif_get_dataset` and the
+ * `gbif://dataset/{datasetKey}` resource.
+ *
+ * `/dataset/{key}` supplies neither `numRecords` nor `recordCount` for any dataset,
+ * while `/dataset/search` supplies `recordCount` — so a detail lookup would report
+ * less than the list tool it is meant to expand on. An OCCURRENCE dataset closes
+ * that gap with the indexed occurrence count, which is the figure search reports.
+ * Other dataset types have no equivalent, and the extra lookup is best-effort, so
+ * the field stays absent rather than blocking or failing the record.
+ */
+export function resolveDatasetRecordCount(
+  raw: RawDatasetRecord,
+  ctx: Context,
+): Promise<number | undefined> {
+  const declared = raw.numRecords ?? raw.recordCount;
+  if (declared != null) return Promise.resolve(declared);
+  if (raw.type !== 'OCCURRENCE' || !raw.key) return Promise.resolve(undefined);
+  return getGbifService().getDatasetOccurrenceCount(raw.key, ctx);
+}
 
 /**
  * Project raw dataset contacts to a `limit`-capped, compact list plus total/returned counts.

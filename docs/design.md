@@ -54,7 +54,7 @@ The server is read-only. Every endpoint it calls is public and takes no credenti
 - Aggregate occurrence counts by facet (country, year, basis of record, dataset, kingdom)
 - Search and fetch dataset metadata, including citation and license
 - Search publishing organizations by name or country
-- Communicate pagination state clearly — GBIF caps offset+limit at ~100,000; deep pagination requires the download API (out of scope)
+- Communicate pagination state clearly — GBIF serves offset+limit up to 100,001; deep pagination requires the download API (out of scope)
 
 ---
 
@@ -219,7 +219,7 @@ The core data retrieval tool. Searches 2.4B+ occurrence records with Darwin Core
 **Important nuances:**
 - `taxonKey` is the backbone key from `gbif_match_species`. Passing a raw name as `scientificName` also works but may miss synonyms — the backbone key is preferred.
 - The occurrence search endpoint does NOT support free-text search against collectors or locality descriptions — use Darwin Core filter params.
-- Pagination is capped: GBIF limits offset+limit to approximately 100,000. For deeper enumeration, GBIF's asynchronous download API is required (out of scope for this server).
+- Pagination is capped: GBIF serves offset+limit up to 100,001 and answers `Max offset of 100001 exceeded` past it. For deeper enumeration, GBIF's asynchronous download API is required (out of scope for this server).
 - WKT geometry accepts POLYGON and MULTIPOLYGON with coordinates as `lon lat` pairs.
 
 **Key inputs:**
@@ -253,7 +253,7 @@ z.object({
   limit: z.number().min(1).max(300).default(20)
     .describe('Number of records to return (default 20, max 300).'),
   offset: z.number().min(0).default(0)
-    .describe('Pagination offset. GBIF caps offset+limit at approximately 100,000 — for deeper enumeration use gbif_occurrence_facets or refine filters.'),
+    .describe('Pagination offset. GBIF serves offset+limit up to 100,001 and rejects anything past it — for deeper enumeration use gbif_occurrence_facets or refine filters.'),
 })
 ```
 
@@ -269,9 +269,9 @@ z.object({
 - `recordedBy` (may be absent)
 - `issues` — array of GBIF quality flags
 
-**Pagination output:** `count` (total matches), `endOfRecords`, `offset`, `limit`, `paginationNote` if the cap is near.
+**Pagination output:** `count` (total matches), `endOfRecords`, `offset`, `limit`, and an enrichment `notice` when the result set is empty or the offset overshot the total.
 
-**Errors:** `upstream_error` on API failures, `validation_error` on malformed geometry.
+**Errors:** `pagination_cap_exceeded` when offset+limit passes 100,001, `invalid_filter` when a datasetKey is not a UUID or GBIF rejects the geometry or a range.
 
 **Annotations:** `readOnlyHint: true`
 
@@ -446,7 +446,7 @@ Typical agent task: "What vertebrate species have been recorded in a 50km radius
 
 **2. `gbif_occurrence_facets` as a separate tool, not folded into `gbif_search_occurrences`.** Facet-only queries (`limit=0`) are a fundamentally different use pattern — no records returned, just aggregate counts. Exposing them as a separate tool makes the intent clear and avoids the cognitive overhead of understanding `limit=0` as a special mode. The tool names the facet dimensions explicitly via an enum, which is more discoverable than a free string parameter.
 
-**3. No occurrence download tool.** GBIF's asynchronous download API requires an account, creates a background job, polls for completion, and returns a DwC archive ZIP. The UX does not fit the synchronous request/response model of MCP tools. The search endpoint (capped at ~100,000 offset) is sufficient for agent workflows; for bulk downloads, users should use gbif.org directly.
+**3. No occurrence download tool.** GBIF's asynchronous download API requires an account, creates a background job, polls for completion, and returns a DwC archive ZIP. The UX does not fit the synchronous request/response model of MCP tools. The search endpoint (capped at offset+limit 100,001) is sufficient for agent workflows; for bulk downloads, users should use gbif.org directly.
 
 **4. Occurrence record output normalization.** GBIF's occurrence search response is verbose (the `classifications` object includes entries for both the Catalogue of Life backbone and the legacy GBIF backbone, with deeply nested structure). The handler extracts the simpler top-level Darwin Core fields (`taxonKey`, `scientificName`, `kingdom`, etc.) and discards the `classifications` nested object to reduce response size. The full record is available via `gbif_get_occurrence` when needed.
 
@@ -456,13 +456,13 @@ Typical agent task: "What vertebrate species have been recorded in a 50km radius
 
 **7. Two resources, not more.** Species and dataset records are the two stable, addressable, reference objects with real utility as injectable context. Occurrence records are too numerous (2.4B+) and too transient to be useful as resources. Publisher/organization records are rarely needed as injectable context. The resource surface is intentionally minimal.
 
-**8. Pagination cap surfaced in output.** GBIF's search API silently returns no more data once offset+limit approaches 100,000. Rather than failing silently, the handler detects when the request is near the cap and populates a `paginationNote` field in the output advising the agent to refine filters or use facets for aggregate counts.
+**8. Pagination cap enforced before the request.** GBIF rejects offset+limit past 100,001 with a deterministic 400, which would otherwise burn the whole retry budget. The handler checks the sum first and fails with `pagination_cap_exceeded`, naming the boundary and pointing at `gbif_occurrence_facets` for aggregate counts.
 
 ---
 
 ## Known Limitations
 
-- **Pagination hard cap at ~100,000 records.** GBIF's search API does not support deep pagination. Workflows needing millions of records require GBIF's asynchronous download API, which is out of scope.
+- **Pagination hard cap at offset+limit 100,001.** GBIF's search API does not support deep pagination. Workflows needing millions of records require GBIF's asynchronous download API, which is out of scope.
 - **Occurrence search is not full-text.** The search endpoint filters on Darwin Core structured fields only. There is no free-text search across collector notes, locality descriptions, or identification remarks.
 - **Backbone vs. checklist taxon keys.** GBIF has a single backbone taxonomy (`d7dddbf4-2cf0-4f39-9b2a-bb099caae36c`) and many secondary checklists. Occurrence search works only with backbone keys (the `nubKey`). The `gbif_match_species` tool always returns backbone keys.
 - **Name matching confidence.** Below confidence ~80, matches should be treated with caution. The `confidence` field is surfaced in the output. The `/species/match` endpoint does not return an `alternatives` array — callers with low-confidence matches should retry with broader or different input (e.g., remove `strict`, try a higher-rank name).
@@ -496,7 +496,7 @@ Typical agent task: "What vertebrate species have been recorded in a 50km radius
 
 ### Pagination pattern
 
-All list endpoints return: `{ offset, limit, endOfRecords, count, results[] }`. Page with `offset` + `limit`. Occurrence search: capped at approximately `offset + limit ≤ 100,000`.
+All list endpoints return: `{ offset, limit, endOfRecords, count, results[] }`. Page with `offset` + `limit`. Occurrence search: capped at `offset + limit ≤ 100,001`.
 
 ### Facet query pattern
 

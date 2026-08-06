@@ -131,14 +131,61 @@ describe('gbifSearchOccurrences', () => {
     expect(enrichment.notice).toContain('Offset 10 exceeds totalCount');
   });
 
-  it('throws pagination_cap_exceeded when offset+limit exceeds pagination cap', async () => {
-    const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
-    // offset 99000 + limit 20 = 99020 > PAGINATION_CAP (99000)
-    const input = gbifSearchOccurrences.input.parse({ offset: 99000, limit: 20 });
-
-    await expect(gbifSearchOccurrences.handler(input, ctx)).rejects.toMatchObject({
-      data: { reason: 'pagination_cap_exceeded' },
+  /**
+   * #42 — GBIF serves offset+limit up to 100,001 and answers
+   * `Max offset of 100001 exceeded` at 100,002. The guard sits on that boundary,
+   * so the 99,001–100,001 band it used to reject now reaches GBIF.
+   */
+  it('serves the deepest page GBIF accepts', async () => {
+    mockSearchOccurrences.mockResolvedValue({
+      results: [],
+      count: 3000000000,
+      offset: 99701,
+      limit: 300,
+      endOfRecords: false,
     });
+
+    const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
+    const input = gbifSearchOccurrences.input.parse({ offset: 99701, limit: 300 });
+    await gbifSearchOccurrences.handler(input, ctx);
+
+    expect(mockSearchOccurrences).toHaveBeenCalledWith(
+      expect.objectContaining({ offset: 99701, limit: 300 }),
+      ctx,
+    );
+  });
+
+  it('throws pagination_cap_exceeded one record past the boundary', async () => {
+    const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
+    const input = gbifSearchOccurrences.input.parse({ offset: 99702, limit: 300 });
+
+    const err = await gbifSearchOccurrences.handler(input, ctx).catch((e: unknown) => e);
+
+    expect(err).toMatchObject({ data: { reason: 'pagination_cap_exceeded' } });
+    expect(mockSearchOccurrences).not.toHaveBeenCalled();
+    // The message must name the enforced boundary, not one the failing sum sits below.
+    expect((err as Error).message).toContain('100,001');
+    expect((err as Error).message).toContain('100002');
+  });
+
+  it('states the same cap in the tool and offset descriptions', () => {
+    expect(gbifSearchOccurrences.description).toContain('100,001');
+    expect(gbifSearchOccurrences.input.shape.offset.description).toContain('100,001');
+    expect(gbifSearchOccurrences.description).not.toMatch(/approximately/i);
+  });
+
+  /** #38 — a malformed datasetKey fails locally with guidance rather than as a bare 400. */
+  it('rejects a non-UUID datasetKey without issuing a request', async () => {
+    const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
+    const input = gbifSearchOccurrences.input.parse({ datasetKey: 'eBird' });
+
+    const err = await gbifSearchOccurrences.handler(input, ctx).catch((e: unknown) => e);
+
+    expect(err).toMatchObject({ data: { reason: 'invalid_filter' } });
+    expect((err as { data: { recovery?: { hint?: string } } }).data.recovery?.hint).toContain(
+      'gbif_search_datasets',
+    );
+    expect(mockSearchOccurrences).not.toHaveBeenCalled();
   });
 
   it('handles sparse occurrence records', async () => {

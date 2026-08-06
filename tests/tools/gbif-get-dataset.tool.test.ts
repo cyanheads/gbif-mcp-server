@@ -13,6 +13,13 @@ vi.mock('@/services/gbif/gbif-service.js', () => ({
 
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 
+/** EOD – eBird Observation Dataset. */
+const EBIRD_KEY = '4fa7b334-ce0d-4e88-aaae-2e0c138d049e';
+/** iNaturalist Research-grade Observations. */
+const INAT_KEY = '50c9509d-22c7-4a22-a47d-8c48425ef4a7';
+/** Well-formed UUID GBIF has never allocated. */
+const MISSING_KEY = '00000000-0000-0000-0000-000000000000';
+
 /** Build N synthetic dataset contacts mirroring GBIF's flat contact shape. */
 function makeContacts(n: number) {
   return Array.from({ length: n }, (_, i) => ({
@@ -26,15 +33,20 @@ function makeContacts(n: number) {
 
 describe('gbifGetDataset', () => {
   const mockGetDataset = vi.fn();
+  const mockCount = vi.fn();
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(getGbifService).mockReturnValue({ getDataset: mockGetDataset } as never);
+    mockCount.mockResolvedValue(undefined);
+    vi.mocked(getGbifService).mockReturnValue({
+      getDataset: mockGetDataset,
+      getDatasetOccurrenceCount: mockCount,
+    } as never);
   });
 
   it('returns full dataset record', async () => {
     mockGetDataset.mockResolvedValue({
-      key: 'abc-def-123',
+      key: EBIRD_KEY,
       title: 'eBird Basic Dataset',
       type: 'OCCURRENCE',
       description: 'Cornell Lab of Ornithology eBird checklist data.',
@@ -56,10 +68,10 @@ describe('gbifGetDataset', () => {
     });
 
     const ctx = createMockContext({ errors: gbifGetDataset.errors });
-    const input = gbifGetDataset.input.parse({ datasetKey: 'abc-def-123' });
+    const input = gbifGetDataset.input.parse({ datasetKey: EBIRD_KEY });
     const result = await gbifGetDataset.handler(input, ctx);
 
-    expect(result.key).toBe('abc-def-123');
+    expect(result.key).toBe(EBIRD_KEY);
     expect(result.title).toBe('eBird Basic Dataset');
     expect(result.type).toBe('OCCURRENCE');
     expect(result.license).toBe('CC_BY_NC_4_0');
@@ -76,7 +88,7 @@ describe('gbifGetDataset', () => {
     mockGetDataset.mockResolvedValue({ key: undefined });
 
     const ctx = createMockContext({ errors: gbifGetDataset.errors });
-    const input = gbifGetDataset.input.parse({ datasetKey: 'nonexistent-uuid' });
+    const input = gbifGetDataset.input.parse({ datasetKey: MISSING_KEY });
 
     await expect(gbifGetDataset.handler(input, ctx)).rejects.toMatchObject({
       data: { reason: 'not_found' },
@@ -85,26 +97,81 @@ describe('gbifGetDataset', () => {
 
   it('uses numRecords over recordCount', async () => {
     mockGetDataset.mockResolvedValue({
-      key: 'abc',
+      key: INAT_KEY,
       numRecords: 999,
       recordCount: 111,
     });
 
     const ctx = createMockContext({ errors: gbifGetDataset.errors });
-    const input = gbifGetDataset.input.parse({ datasetKey: 'abc' });
+    const input = gbifGetDataset.input.parse({ datasetKey: INAT_KEY });
     const result = await gbifGetDataset.handler(input, ctx);
 
     expect(result.recordCount).toBe(999);
+    expect(mockCount).not.toHaveBeenCalled();
+  });
+
+  /**
+   * #40 — /dataset/{key} supplies neither field on any dataset, so an OCCURRENCE
+   * dataset gets the figure from the indexed occurrence count instead of leaving
+   * a detail lookup reporting less than gbif_search_datasets does.
+   */
+  it('fills recordCount from the occurrence count when the detail record omits it', async () => {
+    mockGetDataset.mockResolvedValue({ key: EBIRD_KEY, type: 'OCCURRENCE' });
+    mockCount.mockResolvedValue(1775781186);
+
+    const ctx = createMockContext({ errors: gbifGetDataset.errors });
+    const input = gbifGetDataset.input.parse({ datasetKey: EBIRD_KEY });
+    const result = await gbifGetDataset.handler(input, ctx);
+
+    expect(mockCount).toHaveBeenCalledWith(EBIRD_KEY, ctx);
+    expect(result.recordCount).toBe(1775781186);
+  });
+
+  it('leaves recordCount absent when the occurrence count is unavailable', async () => {
+    mockGetDataset.mockResolvedValue({ key: EBIRD_KEY, type: 'OCCURRENCE' });
+    mockCount.mockResolvedValue(undefined);
+
+    const ctx = createMockContext({ errors: gbifGetDataset.errors });
+    const input = gbifGetDataset.input.parse({ datasetKey: EBIRD_KEY });
+    const result = await gbifGetDataset.handler(input, ctx);
+
+    expect(result.key).toBe(EBIRD_KEY);
+    expect(result.recordCount).toBeUndefined();
+  });
+
+  it('does not count occurrences for a non-OCCURRENCE dataset', async () => {
+    mockGetDataset.mockResolvedValue({ key: INAT_KEY, type: 'CHECKLIST' });
+
+    const ctx = createMockContext({ errors: gbifGetDataset.errors });
+    const input = gbifGetDataset.input.parse({ datasetKey: INAT_KEY });
+    const result = await gbifGetDataset.handler(input, ctx);
+
+    expect(mockCount).not.toHaveBeenCalled();
+    expect(result.recordCount).toBeUndefined();
+  });
+
+  /** #38 — a malformed key fails locally with guidance, not as a bare upstream 400. */
+  it('rejects a non-UUID datasetKey without issuing a request', async () => {
+    const ctx = createMockContext({ errors: gbifGetDataset.errors });
+    const input = gbifGetDataset.input.parse({ datasetKey: 'not-a-uuid' });
+
+    const err = await gbifGetDataset.handler(input, ctx).catch((e: unknown) => e);
+
+    expect(err).toMatchObject({ data: { reason: 'invalid_filter' } });
+    expect((err as { data: { recovery?: { hint?: string } } }).data.recovery?.hint).toContain(
+      '8-4-4-4-12',
+    );
+    expect(mockGetDataset).not.toHaveBeenCalled();
   });
 
   it('omits contacts when empty array', async () => {
     mockGetDataset.mockResolvedValue({
-      key: 'xyz',
+      key: INAT_KEY,
       contacts: [],
     });
 
     const ctx = createMockContext({ errors: gbifGetDataset.errors });
-    const input = gbifGetDataset.input.parse({ datasetKey: 'xyz' });
+    const input = gbifGetDataset.input.parse({ datasetKey: INAT_KEY });
     const result = await gbifGetDataset.handler(input, ctx);
 
     expect(result.contacts).toBeUndefined();
@@ -112,12 +179,12 @@ describe('gbifGetDataset', () => {
 
   it('omits contact email when empty', async () => {
     mockGetDataset.mockResolvedValue({
-      key: 'xyz',
+      key: INAT_KEY,
       contacts: [{ type: 'METADATA_AUTHOR', firstName: 'Alice', email: [] }],
     });
 
     const ctx = createMockContext({ errors: gbifGetDataset.errors });
-    const input = gbifGetDataset.input.parse({ datasetKey: 'xyz' });
+    const input = gbifGetDataset.input.parse({ datasetKey: INAT_KEY });
     const result = await gbifGetDataset.handler(input, ctx);
 
     expect(result.contacts![0].email).toBeUndefined();
@@ -125,10 +192,10 @@ describe('gbifGetDataset', () => {
 
   it('caps contacts at the default contactLimit and reports full counts', async () => {
     // eBird returns 42 contacts; the default cap of 10 keeps the response compact.
-    mockGetDataset.mockResolvedValue({ key: 'ebird', contacts: makeContacts(42) });
+    mockGetDataset.mockResolvedValue({ key: EBIRD_KEY, contacts: makeContacts(42) });
 
     const ctx = createMockContext({ errors: gbifGetDataset.errors });
-    const input = gbifGetDataset.input.parse({ datasetKey: 'ebird' });
+    const input = gbifGetDataset.input.parse({ datasetKey: EBIRD_KEY });
     const result = await gbifGetDataset.handler(input, ctx);
 
     expect(result.contacts).toHaveLength(10);
@@ -139,10 +206,10 @@ describe('gbifGetDataset', () => {
   });
 
   it('honors an explicit contactLimit', async () => {
-    mockGetDataset.mockResolvedValue({ key: 'ebird', contacts: makeContacts(42) });
+    mockGetDataset.mockResolvedValue({ key: EBIRD_KEY, contacts: makeContacts(42) });
 
     const ctx = createMockContext({ errors: gbifGetDataset.errors });
-    const input = gbifGetDataset.input.parse({ datasetKey: 'ebird', contactLimit: 3 });
+    const input = gbifGetDataset.input.parse({ datasetKey: EBIRD_KEY, contactLimit: 3 });
     const result = await gbifGetDataset.handler(input, ctx);
 
     expect(result.contacts).toHaveLength(3);
@@ -151,10 +218,10 @@ describe('gbifGetDataset', () => {
   });
 
   it('suppresses contact detail when contactLimit is 0 but preserves the count', async () => {
-    mockGetDataset.mockResolvedValue({ key: 'ebird', contacts: makeContacts(42) });
+    mockGetDataset.mockResolvedValue({ key: EBIRD_KEY, contacts: makeContacts(42) });
 
     const ctx = createMockContext({ errors: gbifGetDataset.errors });
-    const input = gbifGetDataset.input.parse({ datasetKey: 'ebird', contactLimit: 0 });
+    const input = gbifGetDataset.input.parse({ datasetKey: EBIRD_KEY, contactLimit: 0 });
     const result = await gbifGetDataset.handler(input, ctx);
 
     expect(result.contacts).toBeUndefined();
@@ -163,10 +230,10 @@ describe('gbifGetDataset', () => {
   });
 
   it('returns every contact when contactLimit exceeds the total', async () => {
-    mockGetDataset.mockResolvedValue({ key: 'small', contacts: makeContacts(4) });
+    mockGetDataset.mockResolvedValue({ key: INAT_KEY, contacts: makeContacts(4) });
 
     const ctx = createMockContext({ errors: gbifGetDataset.errors });
-    const input = gbifGetDataset.input.parse({ datasetKey: 'small', contactLimit: 100 });
+    const input = gbifGetDataset.input.parse({ datasetKey: INAT_KEY, contactLimit: 100 });
     const result = await gbifGetDataset.handler(input, ctx);
 
     expect(result.contacts).toHaveLength(4);
@@ -175,10 +242,10 @@ describe('gbifGetDataset', () => {
   });
 
   it('omits contact counts when the dataset has no contacts', async () => {
-    mockGetDataset.mockResolvedValue({ key: 'none', contacts: [] });
+    mockGetDataset.mockResolvedValue({ key: INAT_KEY, contacts: [] });
 
     const ctx = createMockContext({ errors: gbifGetDataset.errors });
-    const input = gbifGetDataset.input.parse({ datasetKey: 'none' });
+    const input = gbifGetDataset.input.parse({ datasetKey: INAT_KEY });
     const result = await gbifGetDataset.handler(input, ctx);
 
     expect(result.contacts).toBeUndefined();
@@ -188,7 +255,7 @@ describe('gbifGetDataset', () => {
 
   it('formats the contact count summary', () => {
     const blocks = gbifGetDataset.format!({
-      key: 'ebird',
+      key: EBIRD_KEY,
       title: 'eBird',
       contactsTotal: 42,
       contactsReturned: 10,
@@ -199,13 +266,13 @@ describe('gbifGetDataset', () => {
   });
 
   it('handles sparse dataset record', async () => {
-    mockGetDataset.mockResolvedValue({ key: 'sparse' });
+    mockGetDataset.mockResolvedValue({ key: INAT_KEY });
 
     const ctx = createMockContext({ errors: gbifGetDataset.errors });
-    const input = gbifGetDataset.input.parse({ datasetKey: 'sparse' });
+    const input = gbifGetDataset.input.parse({ datasetKey: INAT_KEY });
     const result = await gbifGetDataset.handler(input, ctx);
 
-    expect(result.key).toBe('sparse');
+    expect(result.key).toBe(INAT_KEY);
     expect(result.title).toBeUndefined();
     expect(result.citationText).toBeUndefined();
     expect(result.contacts).toBeUndefined();
@@ -215,7 +282,7 @@ describe('gbifGetDataset', () => {
 
   it('exposes temporal and geographic coverage (#28)', async () => {
     mockGetDataset.mockResolvedValue({
-      key: '4fa7b334-ce0d-4e88-aaae-2e0c138d049e',
+      key: EBIRD_KEY,
       temporalCoverages: [
         { start: '1800-01-01T00:00:00.000+00:00', end: '2024-12-31T00:00:00.000+00:00' },
       ],
@@ -224,7 +291,7 @@ describe('gbifGetDataset', () => {
 
     const ctx = createMockContext({ errors: gbifGetDataset.errors });
     const input = gbifGetDataset.input.parse({
-      datasetKey: '4fa7b334-ce0d-4e88-aaae-2e0c138d049e',
+      datasetKey: EBIRD_KEY,
     });
     const result = await gbifGetDataset.handler(input, ctx);
 
@@ -238,13 +305,13 @@ describe('gbifGetDataset', () => {
     // GBIF also emits verbatim/single-date temporal shapes and boundingBox-only geographic
     // entries; without a start/end or description they project to nothing and are omitted.
     mockGetDataset.mockResolvedValue({
-      key: 'cov-empty',
+      key: INAT_KEY,
       temporalCoverages: [{}],
       geographicCoverages: [{}],
     });
 
     const ctx = createMockContext({ errors: gbifGetDataset.errors });
-    const input = gbifGetDataset.input.parse({ datasetKey: 'cov-empty' });
+    const input = gbifGetDataset.input.parse({ datasetKey: INAT_KEY });
     const result = await gbifGetDataset.handler(input, ctx);
 
     expect(result.temporalCoverages).toBeUndefined();
@@ -253,7 +320,7 @@ describe('gbifGetDataset', () => {
 
   it('formats coverage ranges and descriptions', () => {
     const blocks = gbifGetDataset.format!({
-      key: 'ebird',
+      key: EBIRD_KEY,
       title: 'eBird',
       temporalCoverages: [{ start: '1800-01-01', end: '2024-12-31' }],
       geographicCoverages: [{ description: 'Worldwide' }],
@@ -266,7 +333,7 @@ describe('gbifGetDataset', () => {
 
   it('formats output with key fields', () => {
     const output = {
-      key: 'abc-def-123',
+      key: EBIRD_KEY,
       title: 'eBird Basic Dataset',
       type: 'OCCURRENCE',
       license: 'CC_BY_NC_4_0',
@@ -277,7 +344,7 @@ describe('gbifGetDataset', () => {
     };
     const blocks = gbifGetDataset.format!(output);
     const text = blocks[0].type === 'text' ? blocks[0].text : '';
-    expect(text).toContain('abc-def-123');
+    expect(text).toContain(EBIRD_KEY);
     expect(text).toContain('eBird Basic Dataset');
     expect(text).toContain('OCCURRENCE');
     expect(text).toContain('Sullivan et al. 2009');

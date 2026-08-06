@@ -121,7 +121,7 @@ Search 2.4B+ GBIF occurrence records with full Darwin Core filtering.
 - Temporal filters: `year` as single year or range, `month` (1–12) for seasonal queries
 - `basisOfRecord` enum: `HUMAN_OBSERVATION`, `PRESERVED_SPECIMEN`, `MACHINE_OBSERVATION`, and more
 - `hasCoordinate` to require or exclude georeferenced records
-- Pagination capped at offset+limit ≈ 100,000 — use `gbif_occurrence_facets` for aggregate analysis beyond this
+- Pagination capped at offset+limit = 100,001, the deepest page GBIF serves — use `gbif_occurrence_facets` for aggregate analysis beyond this
 
 ---
 
@@ -178,6 +178,7 @@ Fetch full dataset metadata by UUID.
 - Full description, citation text (for academic reference), license, DOI
 - Contacts with role, name, organization, and email
 - Temporal and geographic coverage ranges when the publisher declares them
+- `recordCount` for `OCCURRENCE` datasets — the indexed occurrence total, matching what `gbif_search_datasets` reports; absent for other dataset types
 - `numConstituents` for aggregate datasets (e.g. iNaturalist, eBird)
 - Use after `gbif_search_datasets` or when an occurrence record's `datasetKey` needs provenance detail
 
@@ -213,7 +214,7 @@ GBIF-specific:
 
 - Full GBIF REST API v1 coverage: species taxonomy, occurrences, datasets, and publishers
 - `gbif_match_species` as the entry point — resolves synonyms to backbone taxon keys used throughout
-- Occurrence pagination cap detection with `paginationNote` — redirects to facet aggregation before hitting the ~100,000 row limit
+- Occurrence pagination guarded at GBIF's own offset+limit = 100,001 boundary — an over-cap request fails locally with a `notice` redirecting to facet aggregation, instead of spending the retry budget on a deterministic upstream rejection
 - WKT polygon geometry support for geographic occurrence queries
 - Darwin Core field mapping with explicit provenance on sparse upstream fields
 

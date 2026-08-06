@@ -4,7 +4,9 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
+import { isGbifUuid } from '../utils.js';
 
 /** Empty-result and pagination-overshoot guidance. */
 function buildNotice(args: {
@@ -49,7 +51,9 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
     datasetKey: z
       .string()
       .optional()
-      .describe('Scope to a specific checklist dataset UUID. Omit to search the GBIF backbone.'),
+      .describe(
+        'Scope to a specific checklist dataset UUID (8-4-4-4-12 hex). Omit to search the GBIF backbone.',
+      ),
     limit: z
       .number()
       .min(1)
@@ -98,8 +102,26 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
       ),
   },
 
+  errors: [
+    {
+      reason: 'invalid_filter',
+      code: JsonRpcErrorCode.InvalidParams,
+      when: 'datasetKey is not a UUID, or GBIF rejected another filter value as malformed.',
+      recovery:
+        'Supply datasetKey as the 8-4-4-4-12 hex UUID of a checklist dataset from gbif_search_datasets with type CHECKLIST, or omit it to search the backbone.',
+    },
+  ],
+
   async handler(input, ctx) {
     ctx.log.info('Searching species taxonomy', { q: input.q, rank: input.rank });
+    if (input.datasetKey?.trim() && !isGbifUuid(input.datasetKey)) {
+      throw ctx.fail(
+        'invalid_filter',
+        `datasetKey "${input.datasetKey}" is not a GBIF dataset UUID.`,
+        { ...ctx.recoveryFor('invalid_filter') },
+      );
+    }
+
     const raw = await getGbifService().searchSpecies(
       {
         ...(input.q?.trim() && { q: input.q }),

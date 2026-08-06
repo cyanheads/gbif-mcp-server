@@ -10,7 +10,9 @@ import type { RawDatasetRecord } from '@/services/gbif/types.js';
 import {
   compactGeographicCoverages,
   compactTemporalCoverages,
+  isGbifUuid,
   projectContacts,
+  resolveDatasetRecordCount,
   stripHtml,
 } from '../utils.js';
 
@@ -18,14 +20,14 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
   title: 'Get Dataset',
   description:
     'Fetch full dataset metadata by UUID key — title, description, citation text, contacts, license, ' +
-    'DOI, numConstituents (sub-datasets), and temporal/geographic coverage. Use after gbif_search_datasets ' +
+    'DOI, record count, numConstituents (sub-datasets), and temporal/geographic coverage. Use after gbif_search_datasets ' +
     "or when an occurrence record's datasetKey needs provenance detail. " +
     'Contacts are capped by contactLimit (default 10); contactsTotal and contactsReturned report the full count.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     datasetKey: z
       .string()
-      .describe('Dataset UUID from gbif_search_datasets or an occurrence record.'),
+      .describe('Dataset UUID (8-4-4-4-12 hex) from gbif_search_datasets or an occurrence record.'),
     contactLimit: z
       .number()
       .int()
@@ -51,7 +53,12 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
       .string()
       .optional()
       .describe('Country code of the publishing organization.'),
-    recordCount: z.number().optional().describe('Number of records in the dataset. May be absent.'),
+    recordCount: z
+      .number()
+      .optional()
+      .describe(
+        'Occurrence records GBIF has indexed for this dataset, matching the figure gbif_search_datasets reports. Fetched separately for OCCURRENCE datasets because the detail endpoint omits it; absent for other dataset types and when that lookup does not return in time.',
+      ),
     numConstituents: z
       .number()
       .optional()
@@ -130,15 +137,30 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
       recovery:
         "Use gbif_search_datasets to find valid dataset keys, or check the UUID from an occurrence record's datasetKey field.",
     },
+    {
+      reason: 'invalid_filter',
+      code: JsonRpcErrorCode.InvalidParams,
+      when: 'datasetKey is not a UUID, or GBIF rejected the request as malformed.',
+      recovery:
+        "Supply the 8-4-4-4-12 hex UUID exactly as gbif_search_datasets returns it, or as it appears in an occurrence record's datasetKey field — a dataset title or DOI is not a key.",
+    },
   ],
 
   async handler(input, ctx) {
     ctx.log.info('Fetching dataset record', { datasetKey: input.datasetKey });
+    if (!isGbifUuid(input.datasetKey)) {
+      throw ctx.fail(
+        'invalid_filter',
+        `datasetKey "${input.datasetKey}" is not a GBIF dataset UUID.`,
+        { ...ctx.recoveryFor('invalid_filter') },
+      );
+    }
+
     let raw: RawDatasetRecord;
     try {
       raw = await getGbifService().getDataset(input.datasetKey, ctx);
     } catch (err) {
-      if (err instanceof McpError && err.code === -32001) {
+      if (err instanceof McpError && err.code === JsonRpcErrorCode.NotFound) {
         throw ctx.fail('not_found', `Dataset ${input.datasetKey} not found in GBIF.`, {
           ...ctx.recoveryFor('not_found'),
         });
@@ -161,7 +183,7 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
       doi: raw.doi,
       citationText: raw.citation?.text,
       publishingCountry: raw.publishingCountry,
-      recordCount: raw.numRecords ?? raw.recordCount,
+      recordCount: await resolveDatasetRecordCount(raw, ctx),
       numConstituents: raw.numConstituents,
       // contactLimit: 0 suppresses contact detail while projectContacts still reports
       // contactsTotal/contactsReturned, so callers learn the dataset has contacts.

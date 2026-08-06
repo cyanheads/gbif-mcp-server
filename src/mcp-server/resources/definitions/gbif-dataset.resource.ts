@@ -8,7 +8,9 @@ import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import {
   compactGeographicCoverages,
   compactTemporalCoverages,
+  isGbifUuid,
   projectContacts,
+  resolveDatasetRecordCount,
   stripHtml,
 } from '@/mcp-server/tools/utils.js';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
@@ -29,7 +31,7 @@ export const gbifDatasetResource = resource('gbif://dataset/{datasetKey}', {
     "an occurrence record's datasetKey field.",
   mimeType: 'application/json',
   params: z.object({
-    datasetKey: z.string().describe('Dataset UUID.'),
+    datasetKey: z.string().describe('Dataset UUID (8-4-4-4-12 hex).'),
   }),
   output: z.object({
     key: z.string().optional().describe('Dataset UUID.'),
@@ -40,7 +42,12 @@ export const gbifDatasetResource = resource('gbif://dataset/{datasetKey}', {
     doi: z.string().optional().describe('DOI for citation. May be absent.'),
     citationText: z.string().optional().describe('Full citation text. May be absent.'),
     publishingCountry: z.string().optional().describe('Publishing organization country.'),
-    recordCount: z.number().optional().describe('Number of records. May be absent.'),
+    recordCount: z
+      .number()
+      .optional()
+      .describe(
+        'Occurrence records GBIF has indexed for this dataset, matching the figure gbif_search_datasets reports. Fetched separately for OCCURRENCE datasets because the detail endpoint omits it; absent for other dataset types and when that lookup does not return in time.',
+      ),
     numConstituents: z.number().optional().describe('Number of sub-datasets. May be absent.'),
     contacts: z
       .array(
@@ -110,10 +117,25 @@ export const gbifDatasetResource = resource('gbif://dataset/{datasetKey}', {
       recovery:
         "Use gbif_search_datasets to find valid dataset keys, or check the UUID from an occurrence record's datasetKey field.",
     },
+    {
+      reason: 'invalid_filter',
+      code: JsonRpcErrorCode.InvalidParams,
+      when: 'The URI segment is not a UUID, or GBIF rejected the request as malformed.',
+      recovery:
+        "Address the resource with the 8-4-4-4-12 hex UUID exactly as gbif_search_datasets returns it, or as it appears in an occurrence record's datasetKey field.",
+    },
   ],
 
   async handler(params, ctx) {
     ctx.log.debug('Fetching dataset resource', { datasetKey: params.datasetKey });
+    if (!isGbifUuid(params.datasetKey)) {
+      throw ctx.fail(
+        'invalid_filter',
+        `datasetKey "${params.datasetKey}" is not a GBIF dataset UUID.`,
+        { ...ctx.recoveryFor('invalid_filter') },
+      );
+    }
+
     let raw: RawDatasetRecord;
     try {
       raw = await getGbifService().getDataset(params.datasetKey, ctx);
@@ -143,7 +165,7 @@ export const gbifDatasetResource = resource('gbif://dataset/{datasetKey}', {
       doi: raw.doi,
       citationText: raw.citation?.text,
       publishingCountry: raw.publishingCountry,
-      recordCount: raw.numRecords ?? raw.recordCount,
+      recordCount: await resolveDatasetRecordCount(raw, ctx),
       numConstituents: raw.numConstituents,
       ...projectContacts(raw.contacts, CONTACT_CAP),
       temporalCoverages: compactTemporalCoverages(raw.temporalCoverages),

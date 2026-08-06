@@ -13,6 +13,9 @@ vi.mock('@/services/gbif/gbif-service.js', () => ({
 
 import { getGbifService } from '@/services/gbif/gbif-service.js';
 
+/** EOD – eBird Observation Dataset. */
+const EBIRD_KEY = '4fa7b334-ce0d-4e88-aaae-2e0c138d049e';
+
 describe('gbifCountOccurrences', () => {
   const mockCountOccurrences = vi.fn();
 
@@ -71,17 +74,34 @@ describe('gbifCountOccurrences', () => {
   it('passes datasetKey and year filters', async () => {
     mockCountOccurrences.mockResolvedValue(500);
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: gbifCountOccurrences.errors });
     const input = gbifCountOccurrences.input.parse({
-      datasetKey: 'abc-def-123',
+      datasetKey: EBIRD_KEY,
       year: '2020,2024',
     });
     await gbifCountOccurrences.handler(input, ctx);
 
     expect(mockCountOccurrences).toHaveBeenCalledWith(
-      expect.objectContaining({ datasetKey: 'abc-def-123', year: '2020,2024' }),
+      expect.objectContaining({ datasetKey: EBIRD_KEY, year: '2020,2024' }),
       ctx,
     );
+  });
+
+  /**
+   * GBIF's count endpoint answers 200 with `0` for a malformed dataset key, so
+   * without the local check a typo comes back as a confident wrong total (#38).
+   */
+  it('rejects a non-UUID datasetKey without issuing a request', async () => {
+    const ctx = createMockContext({ errors: gbifCountOccurrences.errors });
+    const input = gbifCountOccurrences.input.parse({ datasetKey: 'eBird' });
+
+    const err = await gbifCountOccurrences.handler(input, ctx).catch((e: unknown) => e);
+
+    expect(err).toMatchObject({ data: { reason: 'invalid_filter' } });
+    expect((err as { data: { recovery?: { hint?: string } } }).data.recovery?.hint).toContain(
+      'gbif_search_datasets',
+    );
+    expect(mockCountOccurrences).not.toHaveBeenCalled();
   });
 
   it('formats count as text', () => {

@@ -6,6 +6,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
+import { isGbifUuid } from '../utils.js';
 
 /** Empty-result and pagination-overshoot guidance. */
 function buildNotice(args: {
@@ -23,7 +24,13 @@ function buildNotice(args: {
   return;
 }
 
-const PAGINATION_CAP = 99_000;
+/**
+ * Largest `offset + limit` GBIF serves. Requests at exactly this sum return 200;
+ * one past it returns HTTP 400 `Max offset of 100001 exceeded`. Enforced locally
+ * so an over-cap request fails immediately instead of spending the retry budget
+ * on a rejection that can never change.
+ */
+const PAGINATION_CAP = 100_001;
 
 export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
   title: 'Search Occurrences',
@@ -31,7 +38,7 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
     'Search 2.4B+ GBIF occurrence records with Darwin Core filters. Use taxonKey from gbif_match_species ' +
     'for reliable results — it resolves synonyms automatically. Accepts country (ISO 3166-1 alpha-2), ' +
     'bounding box (decimalLatitude/decimalLongitude ranges), WKT polygon geometry, year range, month, ' +
-    'basis of record, coordinate filter, and dataset key. Pagination is capped at approximately offset+limit=100,000 — ' +
+    'basis of record, coordinate filter, and dataset key. Pagination is capped at offset+limit=100,001 — ' +
     'use gbif_occurrence_facets for aggregate counts across large result sets.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
@@ -120,7 +127,7 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       .string()
       .optional()
       .describe(
-        'Restrict results to a single dataset by its GBIF dataset UUID. Obtain one from gbif_search_datasets, gbif_get_dataset, a DATASET_KEY facet (gbif_occurrence_facets), or the datasetKey field on an occurrence record.',
+        'Restrict results to a single dataset by its GBIF dataset UUID (8-4-4-4-12 hex). Obtain one from gbif_search_datasets, gbif_get_dataset, a DATASET_KEY facet (gbif_occurrence_facets), or the datasetKey field on an occurrence record.',
       ),
     limit: z
       .number()
@@ -133,7 +140,7 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       .min(0)
       .default(0)
       .describe(
-        'Pagination offset. GBIF caps offset+limit at approximately 100,000 — use gbif_occurrence_facets for aggregate analysis beyond this.',
+        'Pagination offset. GBIF serves offset+limit up to 100,001 and rejects anything past it — use gbif_occurrence_facets for aggregate analysis beyond that.',
       ),
   }),
   output: z.object({
@@ -223,16 +230,16 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
     {
       reason: 'pagination_cap_exceeded',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'offset + limit exceeds the GBIF API pagination cap of ~100,000.',
+      when: 'offset + limit exceeds 100,001, the deepest page GBIF serves.',
       recovery:
-        'Reduce offset or limit so their sum stays under 100,000. Use gbif_occurrence_facets for aggregate analysis across large result sets.',
+        'Reduce offset or limit so their sum is at most 100,001. Use gbif_occurrence_facets for aggregate analysis across large result sets.',
     },
     {
-      reason: 'upstream_error',
-      code: JsonRpcErrorCode.InternalError,
-      when: 'The GBIF occurrence search API returned an unexpected error.',
+      reason: 'invalid_filter',
+      code: JsonRpcErrorCode.InvalidParams,
+      when: 'A filter value is unusable — a datasetKey that is not a UUID, or a WKT geometry or range GBIF rejects.',
       recovery:
-        'Retry the request or narrow the filters. Check that geometry WKT is valid if supplied.',
+        'The message names the rejected value. Correct that one filter: geometry is a closed WKT ring in longitude latitude order, ranges are "min,max", and datasetKey is a UUID from gbif_search_datasets.',
     },
   ],
 
@@ -247,8 +254,16 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
     if (input.offset + input.limit > PAGINATION_CAP) {
       throw ctx.fail(
         'pagination_cap_exceeded',
-        `offset + limit (${input.offset + input.limit}) exceeds the GBIF pagination cap of ~100,000. Use gbif_occurrence_facets for aggregate analysis, or reduce offset/limit.`,
+        `offset + limit (${input.offset + input.limit}) exceeds ${PAGINATION_CAP.toLocaleString('en-US')}, the deepest page GBIF serves. Use gbif_occurrence_facets for aggregate analysis, or reduce offset/limit.`,
         { ...ctx.recoveryFor('pagination_cap_exceeded') },
+      );
+    }
+
+    if (input.datasetKey?.trim() && !isGbifUuid(input.datasetKey)) {
+      throw ctx.fail(
+        'invalid_filter',
+        `datasetKey "${input.datasetKey}" is not a GBIF dataset UUID.`,
+        { ...ctx.recoveryFor('invalid_filter') },
       );
     }
 

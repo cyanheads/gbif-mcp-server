@@ -60,12 +60,24 @@ describe('Input injection — string parameters do not crash handlers', () => {
   });
 
   for (const injection of INJECTION_STRINGS) {
-    it(`gbif_search_occurrences survives q="${injection.slice(0, 30)}"`, async () => {
+    /**
+     * gbif_search_occurrences takes no free-text `q` — Zod strips unknown keys, so
+     * probing one would leave the injection string outside the parsed input and the
+     * assertion would hold against any implementation. scientificName is the tool's
+     * free-text field, so the string actually reaches the handler.
+     */
+    it(`gbif_search_occurrences survives scientificName="${injection.slice(0, 30)}"`, async () => {
       const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
-      const input = gbifSearchOccurrences.input.parse({ q: injection });
+      const input = gbifSearchOccurrences.input.parse({ scientificName: injection });
+      expect(input.scientificName).toBe(injection);
+
       // Must not throw — the service mock returns empty results
       const result = await gbifSearchOccurrences.handler(input, ctx);
       expect(result.occurrences).toBeDefined();
+      expect(mockSearch).toHaveBeenCalledWith(
+        expect.objectContaining({ scientificName: injection }),
+        ctx,
+      );
     });
 
     it(`gbif_search_species survives q="${injection.slice(0, 30)}"`, async () => {
@@ -103,6 +115,68 @@ describe('Input injection — string parameters do not crash handlers', () => {
   }
 });
 
+describe('UUID-typed inputs reject before reaching GBIF', () => {
+  const mockSearch = vi.fn();
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getGbifService).mockReturnValue({
+      searchOccurrences: mockSearch,
+      searchSpecies: mockSearch,
+      searchDatasets: mockSearch,
+      countOccurrences: mockSearch,
+      getDataset: mockSearch,
+      getOccurrenceFacets: mockSearch,
+    } as never);
+  });
+
+  const uuidInputs = [
+    { name: 'gbif_search_occurrences.datasetKey', def: gbifSearchOccurrences, field: 'datasetKey' },
+    { name: 'gbif_count_occurrences.datasetKey', def: gbifCountOccurrences, field: 'datasetKey' },
+    { name: 'gbif_search_species.datasetKey', def: gbifSearchSpecies, field: 'datasetKey' },
+    { name: 'gbif_search_datasets.hostingOrg', def: gbifSearchDatasets, field: 'hostingOrg' },
+    { name: 'gbif_get_dataset.datasetKey', def: gbifGetDataset, field: 'datasetKey' },
+    {
+      name: 'gbif_occurrence_facets.datasetKey',
+      def: gbifOccurrenceFacets,
+      field: 'datasetKey',
+      extra: { facet: 'COUNTRY' },
+    },
+  ] as const;
+
+  for (const { name, def, field, extra } of uuidInputs.map((u) => ({
+    extra: undefined as Record<string, unknown> | undefined,
+    ...u,
+  }))) {
+    it(`${name} rejects an injection string as invalid_filter`, async () => {
+      const ctx = createMockContext({ errors: def.errors });
+      const input = def.input.parse({ ...extra, [field]: "' OR '1'='1" });
+
+      const err = await def.handler(input as never, ctx).catch((e: unknown) => e);
+
+      expect(err).toMatchObject({ data: { reason: 'invalid_filter' } });
+      expect(mockSearch).not.toHaveBeenCalled();
+    });
+
+    /**
+     * A padded key is forwarded verbatim, not trimmed, so accepting one would let
+     * it reach GBIF malformed — and `/occurrence/count` answers 200 with `0` for a
+     * malformed key, which is the confident wrong total the check exists to stop.
+     */
+    it(`${name} rejects a whitespace-padded UUID rather than forwarding it`, async () => {
+      const ctx = createMockContext({ errors: def.errors });
+      const padded = ' 4fa7b334-ce0d-4e88-aaae-2e0c138d049e ';
+      const input = def.input.parse({ ...extra, [field]: padded });
+      expect((input as Record<string, unknown>)[field]).toBe(padded);
+
+      const err = await def.handler(input as never, ctx).catch((e: unknown) => e);
+
+      expect(err).toMatchObject({ data: { reason: 'invalid_filter' } });
+      expect(mockSearch).not.toHaveBeenCalled();
+    });
+  }
+});
+
 describe('Oversized input handling', () => {
   const mockSearch = vi.fn();
 
@@ -117,9 +191,11 @@ describe('Oversized input handling', () => {
     mockSearch.mockResolvedValue(makeOccurrenceResponse());
   });
 
-  it('gbif_search_occurrences handles very long q string', async () => {
+  it('gbif_search_occurrences handles very long scientificName string', async () => {
     const ctx = createMockContext({ errors: gbifSearchOccurrences.errors });
-    const input = gbifSearchOccurrences.input.parse({ q: 'A'.repeat(5000) });
+    const input = gbifSearchOccurrences.input.parse({ scientificName: 'A'.repeat(5000) });
+    expect(input.scientificName).toHaveLength(5000);
+
     const result = await gbifSearchOccurrences.handler(input, ctx);
     expect(result.occurrences).toBeDefined();
   });

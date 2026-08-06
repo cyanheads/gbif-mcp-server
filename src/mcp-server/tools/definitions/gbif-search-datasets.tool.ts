@@ -4,8 +4,9 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
-import { stripHtml } from '../utils.js';
+import { isGbifUuid, stripHtml } from '../utils.js';
 
 /** Empty-result and pagination-overshoot guidance. */
 function buildNotice(args: {
@@ -46,7 +47,9 @@ export const gbifSearchDatasets = tool('gbif_search_datasets', {
     hostingOrg: z
       .string()
       .optional()
-      .describe('UUID of the hosting organization. From gbif_search_publishers results.'),
+      .describe(
+        'UUID (8-4-4-4-12 hex) of the hosting organization. From gbif_search_publishers results.',
+      ),
     limit: z
       .number()
       .min(1)
@@ -97,8 +100,26 @@ export const gbifSearchDatasets = tool('gbif_search_datasets', {
       ),
   },
 
+  errors: [
+    {
+      reason: 'invalid_filter',
+      code: JsonRpcErrorCode.InvalidParams,
+      when: 'hostingOrg is not a UUID, or GBIF rejected another filter value as malformed.',
+      recovery:
+        'Supply hostingOrg as the 8-4-4-4-12 hex UUID gbif_search_publishers returns in its key field — an organization name is not a key.',
+    },
+  ],
+
   async handler(input, ctx) {
     ctx.log.info('Searching datasets', { q: input.q, type: input.type });
+    if (input.hostingOrg?.trim() && !isGbifUuid(input.hostingOrg)) {
+      throw ctx.fail(
+        'invalid_filter',
+        `hostingOrg "${input.hostingOrg}" is not a GBIF organization UUID.`,
+        { ...ctx.recoveryFor('invalid_filter') },
+      );
+    }
+
     const raw = await getGbifService().searchDatasets(
       {
         ...(input.q?.trim() && { q: input.q }),

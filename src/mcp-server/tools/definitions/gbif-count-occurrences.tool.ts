@@ -4,7 +4,9 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getGbifService } from '@/services/gbif/gbif-service.js';
+import { isGbifUuid } from '../utils.js';
 
 export const gbifCountOccurrences = tool('gbif_count_occurrences', {
   title: 'Count Occurrences',
@@ -27,7 +29,10 @@ export const gbifCountOccurrences = tool('gbif_count_occurrences', {
       .describe(
         'When true, count only georeferenced records. When false, count only non-georeferenced records.',
       ),
-    datasetKey: z.string().optional().describe('Filter to a specific dataset UUID.'),
+    datasetKey: z
+      .string()
+      .optional()
+      .describe('Filter to a specific dataset UUID (8-4-4-4-12 hex) from gbif_search_datasets.'),
     year: z
       .string()
       .optional()
@@ -37,11 +42,32 @@ export const gbifCountOccurrences = tool('gbif_count_occurrences', {
     count: z.number().describe('Total occurrences matching the supplied filters.'),
   }),
 
+  errors: [
+    {
+      reason: 'invalid_filter',
+      code: JsonRpcErrorCode.InvalidParams,
+      when: 'datasetKey is not a UUID, or GBIF rejected another filter value as malformed.',
+      recovery:
+        'Supply datasetKey as the 8-4-4-4-12 hex UUID gbif_search_datasets returns; year is a single year or a "min,max" range.',
+    },
+  ],
+
   async handler(input, ctx) {
     ctx.log.info('Counting occurrences', {
       taxonKey: input.taxonKey,
       country: input.country,
     });
+
+    // GBIF's count endpoint answers 200 with a count of 0 for a malformed dataset
+    // key, so an unchecked typo returns a confident wrong number rather than an error.
+    if (input.datasetKey?.trim() && !isGbifUuid(input.datasetKey)) {
+      throw ctx.fail(
+        'invalid_filter',
+        `datasetKey "${input.datasetKey}" is not a GBIF dataset UUID.`,
+        { ...ctx.recoveryFor('invalid_filter') },
+      );
+    }
+
     const count = await getGbifService().countOccurrences(
       {
         ...(input.taxonKey !== undefined && { taxonKey: input.taxonKey }),
