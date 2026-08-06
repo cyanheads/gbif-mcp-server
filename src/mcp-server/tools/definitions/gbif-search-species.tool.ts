@@ -29,7 +29,7 @@ export const gbifSearchSpecies = tool('gbif_search_species', {
     'and higher-taxon constraints. Useful for exploring what species exist under a higher taxon ' +
     '(e.g., "list all families of Coleoptera"), for simple name-fragment searches, or when ' +
     'gbif_match_species returns too narrow a result. Paginated — use limit and offset to walk through results.',
-  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     q: z
       .string()

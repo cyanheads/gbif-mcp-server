@@ -28,7 +28,7 @@ export const gbifSearchPublishers = tool('gbif_search_publishers', {
     'Search organizations registered with GBIF by name fragment or country. ' +
     'Returns organization key, title, and country — sufficient to chain into gbif_search_datasets ' +
     'with hostingOrg, or to understand who publishes data for a region.',
-  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     q: z.string().optional().describe('Name fragment to search for. Matches organization names.'),
     country: z

@@ -42,7 +42,7 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
     'Core tool for distribution analysis and trend queries: "which countries have the most records ' +
     'for this species?", "how has observation volume changed since 2010?". ' +
     'Scope the aggregation with taxonKey, country, year, geometry, basisOfRecord, or datasetKey filters.',
-  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     facet: z
       .enum(FACET_VALUES)

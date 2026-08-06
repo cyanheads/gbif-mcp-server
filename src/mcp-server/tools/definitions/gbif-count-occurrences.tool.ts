@@ -12,7 +12,7 @@ export const gbifCountOccurrences = tool('gbif_count_occurrences', {
     'Count occurrences matching a taxon + location filter without fetching records. ' +
     'Use for quick totals ("how many Aves records in Sweden?") or before deciding whether ' +
     'to paginate a full search. Accepts taxonKey, country, isGeoreferenced, datasetKey, and year.',
-  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     taxonKey: z
       .number()

@@ -41,7 +41,7 @@ export const gbifGetOccurrence = tool('gbif_get_occurrence', {
     'record — all coordinates, administrative geography (GADM), dates, collections metadata, ' +
     'collector identifiers, media links, and quality issue flags. Use the occurrence key from ' +
     'gbif_search_occurrences results to fetch full detail.',
-  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     occurrenceKey: z.number().describe('GBIF occurrence key from gbif_search_occurrences results.'),
   }),

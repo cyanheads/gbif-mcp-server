@@ -21,7 +21,7 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
     'DOI, numConstituents (sub-datasets), and temporal/geographic coverage. Use after gbif_search_datasets ' +
     "or when an occurrence record's datasetKey needs provenance detail. " +
     'Contacts are capped by contactLimit (default 10); contactsTotal and contactsReturned report the full count.',
-  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     datasetKey: z
       .string()

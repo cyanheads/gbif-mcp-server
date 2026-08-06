@@ -17,7 +17,7 @@ export const gbifBulkMatchSpecies = tool('gbif_bulk_match_species', {
     'matchType ERROR with the reason, leaving the rest of the batch intact. Resolves synonyms to ' +
     'the accepted backbone key. Common names are not supported — use gbif_search_species for ' +
     'vernacular searches. Below confidence 80, review the match.',
-  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     names: z
       .array(z.string().min(1).describe('A scientific name to match, e.g. "Panthera leo".'))

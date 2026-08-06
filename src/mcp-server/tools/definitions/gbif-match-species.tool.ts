@@ -16,7 +16,7 @@ export const gbifMatchSpecies = tool('gbif_match_species', {
     'the backbone taxonKey required by gbif_search_occurrences, gbif_count_occurrences, and ' +
     'gbif_occurrence_facets. Below confidence 80, the match should be reviewed. ' +
     'matchType NONE means no usable match was found — try removing the strict flag or broadening the name.',
-  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     name: z
       .string()

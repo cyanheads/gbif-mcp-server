@@ -16,7 +16,7 @@ export const gbifGetSpeciesClassification = tool('gbif_get_species_classificatio
     'The array is returned root-first (kingdom → phylum → class → … → immediate parent of the queried taxon); ' +
     'the queried taxon itself is not included — call gbif_get_species for its own record. ' +
     'Useful for building taxonomic trees or understanding placement without navigating the backbone level-by-level.',
-  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     taxonKey: z
       .number()

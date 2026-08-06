@@ -30,7 +30,7 @@ export const gbifSearchDatasets = tool('gbif_search_datasets', {
     'Returns dataset title, description, license, record count, and DOI. ' +
     'Use to find the source dataset behind a set of records, or to explore what data collections ' +
     'are available for a taxon, country, or organization.',
-  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     q: z.string().optional().describe('Free-text search across dataset title and description.'),
     type: z

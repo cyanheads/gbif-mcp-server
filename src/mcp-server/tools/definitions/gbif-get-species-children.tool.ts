@@ -22,7 +22,7 @@ export const gbifGetSpeciesChildren = tool('gbif_get_species_children', {
     'List direct children of a backbone taxon — genera within a family, species within a genus, ' +
     'subspecies within a species. Paginated. Use gbif_match_species to get the taxonKey first, ' +
     'then iterate with offset for large groups.',
-  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     taxonKey: z
       .number()
