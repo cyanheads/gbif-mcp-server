@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.7.1](changelog/0.7.x/0.7.1.md) — 2026-08-06
+
+gbif_search_datasets gains a publishingOrg filter, so an organization key from gbif_search_publishers reaches the datasets that organization published; every optional filter across the seven filtering tools now rejects a blank value instead of dropping it and answering the unfiltered scope.
+
 ## [0.7.0](changelog/0.7.x/0.7.0.md) — 2026-08-06 · ⚠️ Breaking
 
 country on the three occurrence tools and publishingCountry on gbif_search_datasets now reject non-canonical forms instead of silently matching zero records; a whitespace-padded uppercase code, previously tolerated, now fails validation.
