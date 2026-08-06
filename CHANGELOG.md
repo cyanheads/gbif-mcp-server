@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.5.3](changelog/0.5.x/0.5.3.md) — 2026-08-06
+
+Every gbif_* tool now declares openWorldHint true, matching its live GBIF API calls. Requests carry an identifying User-Agent (overridable via GBIF_USER_AGENT), and the docs no longer claim GBIF issues an API key. mcp-ts-core bumped to ^0.11.1, typescript to ^7.0.2.
+
 ## [0.5.2](changelog/0.5.x/0.5.2.md) — 2026-07-13
 
 gbif_occurrence_facets gains a facetOffset input for paging past the first 100 facet values; gbif_search_datasets flags truncated dataset descriptions in structured output; gbif_get_species_classification's description corrected to match its actual root-to-parent output.

@@ -1,6 +1,6 @@
 # gbif-biodiversity-mcp-server - Directory Structure
 
-Generated on: 2026-07-13 17:20:59
+Generated on: 2026-08-06 16:06:22
 
 ```text
 gbif-biodiversity-mcp-server/
@@ -164,26 +164,32 @@ gbif-biodiversity-mcp-server/
 │   │       └── types.ts
 │   └── index.ts
 ├── tests/
+│   ├── config/
+│   │   └── server-config.test.ts
 │   ├── prompts/
 │   ├── resources/
 │   │   ├── gbif-dataset.resource.test.ts
 │   │   └── gbif-species.resource.test.ts
-│   └── tools/
-│       ├── gbif-bulk-match-species.tool.test.ts
-│       ├── gbif-count-occurrences.tool.test.ts
-│       ├── gbif-get-dataset.tool.test.ts
-│       ├── gbif-get-occurrence.tool.test.ts
-│       ├── gbif-get-species-children.tool.test.ts
-│       ├── gbif-get-species-classification.tool.test.ts
-│       ├── gbif-get-species.tool.test.ts
-│       ├── gbif-match-species.tool.test.ts
-│       ├── gbif-occurrence-facets.tool.test.ts
-│       ├── gbif-search-datasets.tool.test.ts
-│       ├── gbif-search-occurrences.tool.test.ts
-│       ├── gbif-search-publishers.tool.test.ts
-│       ├── gbif-search-species.tool.test.ts
-│       ├── security.test.ts
-│       └── utils.test.ts
+│   ├── services/
+│   │   └── gbif-service.test.ts
+│   ├── tools/
+│   │   ├── annotations.test.ts
+│   │   ├── gbif-bulk-match-species.tool.test.ts
+│   │   ├── gbif-count-occurrences.tool.test.ts
+│   │   ├── gbif-get-dataset.tool.test.ts
+│   │   ├── gbif-get-occurrence.tool.test.ts
+│   │   ├── gbif-get-species-children.tool.test.ts
+│   │   ├── gbif-get-species-classification.tool.test.ts
+│   │   ├── gbif-get-species.tool.test.ts
+│   │   ├── gbif-match-species.tool.test.ts
+│   │   ├── gbif-occurrence-facets.tool.test.ts
+│   │   ├── gbif-search-datasets.tool.test.ts
+│   │   ├── gbif-search-occurrences.tool.test.ts
+│   │   ├── gbif-search-publishers.tool.test.ts
+│   │   ├── gbif-search-species.tool.test.ts
+│   │   ├── security.test.ts
+│   │   └── utils.test.ts
+│   └── credential-claims.test.ts
 ├── .dockerignore
 ├── .env.example
 ├── .gitattributes
