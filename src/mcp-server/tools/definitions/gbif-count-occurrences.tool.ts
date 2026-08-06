@@ -19,7 +19,8 @@ export const gbifCountOccurrences = tool('gbif_count_occurrences', {
   description:
     'Count occurrences matching a taxon + location filter without fetching records. ' +
     'Use for quick totals ("how many Aves records in Sweden?") or before deciding whether ' +
-    'to paginate a full search. Accepts taxonKey, country, publishingCountry, stateProvince, ' +
+    'to paginate a full search. Accepts taxonKey, country (uppercase ISO 3166-1 alpha-2), ' +
+    'publishingCountry, stateProvince, ' +
     'isGeoreferenced, datasetKey, year, ' +
     'occurrenceStatus, and iucnRedListCategory. Counts sightings only by default, matching ' +
     'gbif_search_occurrences — GBIF also indexes absence records, and for some taxa they are ' +
@@ -36,13 +37,20 @@ export const gbifCountOccurrences = tool('gbif_count_occurrences', {
       ),
     country: z
       .string()
+      .regex(
+        /^[A-Z]{2}$/,
+        'country must be an uppercase ISO 3166-1 alpha-2 code such as GB, US, or SE. Lowercase ("gb"), alpha-3 ("USA"), and country names ("Britain") match no records upstream.',
+      )
       .optional()
       .describe(
-        'ISO 3166-1 alpha-2 code of where the occurrence was recorded (e.g., "GB", "US"). Not the publisher\'s country — that is publishingCountry, and the two disagree on most records.',
+        'ISO 3166-1 alpha-2 code, uppercase, of where the occurrence was recorded (e.g., "GB", "US"). Not the publisher\'s country — that is publishingCountry, and the two disagree on most records. Lowercase and alpha-3 forms ("gb", "USA") match nothing upstream, which is why only the uppercase two-letter form is accepted here. Take a value from a COUNTRY facet on gbif_occurrence_facets; an uppercase pair GBIF does not know ("XX") is rejected upstream by name.',
       ),
     publishingCountry: z
       .string()
-      .regex(/^[A-Z]{2}$/)
+      .regex(
+        /^[A-Z]{2}$/,
+        'publishingCountry must be an uppercase ISO 3166-1 alpha-2 code such as GB, US, or SE. Lowercase ("us"), alpha-3 ("USA"), and country names ("Britain") match no records upstream.',
+      )
       .optional()
       .describe(
         'ISO 3166-1 alpha-2 code, uppercase, of the organization that published the record — not where the occurrence was observed, which is country. The two differ constantly: of 60,290,950 records observed in GB, 1,548,928 were published by US organizations. Take a value from a PUBLISHING_COUNTRY facet on gbif_occurrence_facets. Lowercase and alpha-3 forms ("us", "USA") match nothing upstream, which is why only the uppercase two-letter form is accepted here.',
@@ -105,9 +113,9 @@ export const gbifCountOccurrences = tool('gbif_count_occurrences', {
     {
       reason: 'invalid_filter',
       code: JsonRpcErrorCode.InvalidParams,
-      when: 'datasetKey is not a UUID, or GBIF rejected another filter value as malformed.',
+      when: 'datasetKey is not a UUID, a two-letter country or publishingCountry code is one GBIF does not know, or GBIF rejected another filter value as malformed.',
       recovery:
-        'Supply datasetKey as the 8-4-4-4-12 hex UUID gbif_search_datasets returns; year is a single year or a "min,max" range.',
+        'Supply datasetKey as the 8-4-4-4-12 hex UUID gbif_search_datasets returns; year is a single year or a "min,max" range; country and publishingCountry are codes GBIF assigns, so take one from a COUNTRY or PUBLISHING_COUNTRY facet on gbif_occurrence_facets.',
     },
   ],
 
@@ -130,7 +138,7 @@ export const gbifCountOccurrences = tool('gbif_count_occurrences', {
     const count = await getGbifService().countOccurrences(
       {
         ...(input.taxonKey !== undefined && { taxonKey: input.taxonKey }),
-        ...(input.country?.trim() && { country: input.country }),
+        ...(input.country && { country: input.country }),
         ...(input.publishingCountry && { publishingCountry: input.publishingCountry }),
         ...(input.stateProvince?.trim() && { stateProvince: input.stateProvince }),
         ...(input.isGeoreferenced !== undefined && { isGeoreferenced: input.isGeoreferenced }),

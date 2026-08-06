@@ -222,37 +222,112 @@ describe('Closed-vocabulary occurrence filters reject before the handler runs', 
 });
 
 /**
- * #49 — `publishingCountry` draws on the same closed ISO 3166-1 alpha-2 vocabulary,
- * but GBIF splits its rejections: an unparseable code answers HTTP 400 while a
- * lowercase or alpha-3 form answers 200 with zero records. The silent half is the
- * dangerous one, so the schema carries a `^[A-Z]{2}$` pattern and every non-code
- * string fails before the handler runs. `stateProvince` is deliberately absent from
- * this suite — it is free text by nature, guarded by a runtime notice instead.
+ * #49, #50, #51 — `country` and `publishingCountry` draw on the same closed ISO
+ * 3166-1 alpha-2 vocabulary, and GBIF splits its rejections the same way on the
+ * two routes that match the verbatim stored code, `/occurrence/search` and
+ * `/dataset/search`: an unparseable code answers HTTP 400 while a form that
+ * parses but is not stored verbatim — lowercase, mixed case, alpha-3 — answers
+ * 200 with zero rows. The silent half is the dangerous one, so every such schema
+ * carries a `^[A-Z]{2}$` pattern and every non-code string fails before the
+ * handler runs. `stateProvince` is deliberately absent from this suite — it is
+ * free text by nature, guarded by a runtime notice instead.
  */
-describe('publishingCountry rejects non-code strings before the handler runs', () => {
+describe('country codes reject non-code strings before the handler runs', () => {
   const patternInputs = [
-    { name: 'gbif_search_occurrences', def: gbifSearchOccurrences, extra: {} },
-    { name: 'gbif_count_occurrences', def: gbifCountOccurrences, extra: {} },
-    { name: 'gbif_occurrence_facets', def: gbifOccurrenceFacets, extra: { facet: 'COUNTRY' } },
+    {
+      name: 'gbif_search_occurrences',
+      def: gbifSearchOccurrences,
+      extra: {},
+      fields: ['country', 'publishingCountry'],
+    },
+    {
+      name: 'gbif_count_occurrences',
+      def: gbifCountOccurrences,
+      extra: {},
+      fields: ['country', 'publishingCountry'],
+    },
+    {
+      name: 'gbif_occurrence_facets',
+      def: gbifOccurrenceFacets,
+      extra: { facet: 'COUNTRY' },
+      fields: ['country', 'publishingCountry'],
+    },
+    {
+      name: 'gbif_search_datasets',
+      def: gbifSearchDatasets,
+      extra: {},
+      fields: ['publishingCountry'],
+    },
   ] as const;
 
-  for (const { name, def, extra } of patternInputs) {
-    for (const injection of INJECTION_STRINGS) {
-      it(`${name}.publishingCountry rejects "${injection.slice(0, 24)}"`, () => {
-        expect(() => def.input.parse({ ...extra, publishingCountry: injection })).toThrow();
+  /**
+   * Forms the pattern rejects, grouped by what each would otherwise do. `gb`,
+   * `Us`, `uS`, `USA`, `GBR`, and `gb ` are the silent class — 200 with zero rows
+   * on both routes. `G` draws an upstream 400. ` GB` is trimmed upstream and would
+   * answer correctly; it is rejected on shape, so the schema states one accepted
+   * form rather than one form plus whatever GBIF happens to tolerate. The empty
+   * string is the worst of them — the handler guard used to drop it, turning a
+   * filtered query into an unfiltered one. `AA`, `XK`, `XZ`, and `ZZ` are
+   * deliberately absent — GBIF carries them in its own country vocabulary
+   * (`/enumeration/basic/Country` lists all four alongside the 249 officially
+   * assigned ISO codes), so a zero there is an empty bucket, not a malformed
+   * filter.
+   */
+  const NON_CANONICAL_FORMS = ['gb', 'Us', 'uS', 'USA', 'GBR', 'gb ', ' GB', 'G', ''];
+
+  for (const { name, def, extra, fields } of patternInputs) {
+    for (const field of fields) {
+      for (const injection of INJECTION_STRINGS) {
+        it(`${name}.${field} rejects "${injection.slice(0, 24)}"`, () => {
+          expect(() => def.input.parse({ ...extra, [field]: injection })).toThrow();
+        });
+      }
+
+      for (const form of NON_CANONICAL_FORMS) {
+        it(`${name}.${field} rejects the non-canonical form "${form}"`, () => {
+          expect(() => def.input.parse({ ...extra, [field]: form })).toThrow();
+        });
+      }
+
+      /**
+       * Declared, not stripped — without this an undeclared key would satisfy every
+       * rejection assertion above on a tool that never had the filter at all.
+       */
+      it(`${name} declares ${field} and keeps a valid code`, () => {
+        const parsed = def.input.parse({ ...extra, [field]: 'US' }) as Record<string, unknown>;
+        expect(parsed[field]).toBe('US');
+      });
+
+      /**
+       * A pattern rejection is thrown by the SDK before the handler runs, so the
+       * declared `invalid_filter` recovery hint cannot fire for it — the schema's
+       * own message is the only guidance the caller gets, and a bare "Invalid
+       * string" would not name the accepted form.
+       */
+      it(`${name}.${field} names the accepted form in the rejection message`, () => {
+        const result = def.input.safeParse({ ...extra, [field]: 'gb' });
+        expect(result.success).toBe(false);
+        const messages = result.error?.issues.map((i) => i.message).join(' ') ?? '';
+        expect(messages).toContain(field);
+        expect(messages).toMatch(/uppercase ISO 3166-1 alpha-2/);
       });
     }
+  }
+});
 
-    /**
-     * Declared, not stripped — without this an undeclared key would satisfy every
-     * rejection assertion above on a tool that never had the filter at all.
-     */
-    it(`${name} declares publishingCountry and keeps a valid code`, () => {
-      const parsed = def.input.parse({ ...extra, publishingCountry: 'US' }) as Record<
-        string,
-        unknown
-      >;
-      expect(parsed.publishingCountry).toBe('US');
+/**
+ * #50, #51 — the registry route behind `gbif_search_publishers` is `/organization`,
+ * which resolves the *parsed* country rather than matching the stored string: `gb`,
+ * `gbr`, and `GBR` each return the same 223 organizations as `GB`, and `USA` the
+ * same 499 as `US`. There is no silent zero to close, so the pattern every other
+ * country field in this server carries would only reject values that answer
+ * correctly. Pinned so a later consistency pass does not apply it here by symmetry.
+ */
+describe('gbif_search_publishers.country stays unconstrained', () => {
+  for (const form of ['gb', 'GBR', 'gbr', 'Gb']) {
+    it(`accepts "${form}", which the registry resolves to the same organizations as "GB"`, () => {
+      const parsed = gbifSearchPublishers.input.parse({ country: form });
+      expect(parsed.country).toBe(form);
     });
   }
 });

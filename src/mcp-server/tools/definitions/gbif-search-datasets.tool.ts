@@ -27,7 +27,8 @@ function buildNotice(args: {
 export const gbifSearchDatasets = tool('gbif_search_datasets', {
   title: 'Search Datasets',
   description:
-    'Search GBIF datasets by keyword, type, country, or publishing organization. ' +
+    'Search GBIF datasets by keyword, type, publishing country (uppercase ISO 3166-1 alpha-2), ' +
+    'or hosting organization. ' +
     'Returns dataset title, description, license, record count, and DOI. ' +
     'Use to find the source dataset behind a set of records, or to explore what data collections ' +
     'are available for a taxon, country, or organization.',
@@ -42,8 +43,14 @@ export const gbifSearchDatasets = tool('gbif_search_datasets', {
       ),
     publishingCountry: z
       .string()
+      .regex(
+        /^[A-Z]{2}$/,
+        'publishingCountry must be an uppercase ISO 3166-1 alpha-2 code such as GB, US, or SE. Lowercase ("gb"), alpha-3 ("GBR"), and country names ("Britain") match no datasets upstream.',
+      )
       .optional()
-      .describe('ISO 3166-1 alpha-2 country code of the publishing organization.'),
+      .describe(
+        'ISO 3166-1 alpha-2 code, uppercase, of the organization that published the dataset (e.g., "GB", "US", "DE", "SE"). Lowercase and alpha-3 forms ("gb", "GBR") match nothing upstream, which is why only the uppercase two-letter form is accepted here — unlike the country filter on gbif_search_publishers, which resolves either form. Take a value from a PUBLISHING_COUNTRY facet on gbif_occurrence_facets; an uppercase pair GBIF does not assign ("XX") is rejected upstream by name.',
+      ),
     hostingOrg: z
       .string()
       .optional()
@@ -109,9 +116,9 @@ export const gbifSearchDatasets = tool('gbif_search_datasets', {
     {
       reason: 'invalid_filter',
       code: JsonRpcErrorCode.InvalidParams,
-      when: 'hostingOrg is not a UUID, or GBIF rejected another filter value as malformed.',
+      when: 'hostingOrg is not a UUID, publishingCountry is a two-letter code GBIF does not assign, or GBIF rejected another filter value as malformed.',
       recovery:
-        'Supply hostingOrg as the 8-4-4-4-12 hex UUID gbif_search_publishers returns in its key field — an organization name is not a key.',
+        'Supply hostingOrg as the 8-4-4-4-12 hex UUID gbif_search_publishers returns in its key field — an organization name is not a key; publishingCountry is a code GBIF assigns, so take one from a PUBLISHING_COUNTRY facet on gbif_occurrence_facets.',
     },
   ],
 
@@ -129,7 +136,7 @@ export const gbifSearchDatasets = tool('gbif_search_datasets', {
       {
         ...(input.q?.trim() && { q: input.q }),
         ...(input.type && { type: input.type }),
-        ...(input.publishingCountry?.trim() && { publishingCountry: input.publishingCountry }),
+        ...(input.publishingCountry && { publishingCountry: input.publishingCountry }),
         ...(input.hostingOrg?.trim() && { hostingOrg: input.hostingOrg }),
         limit: input.limit,
         offset: input.offset,

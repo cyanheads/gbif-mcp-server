@@ -256,6 +256,23 @@ describe('gbifCountOccurrences', () => {
   });
 
   /**
+   * #50 — a zero count is the worst place for the silent case to land, since the
+   * whole output is the number. Against taxonKey=212 + occurrenceStatus=PRESENT,
+   * `GB` counts 60,290,950 while `gb`, `Us`, `USA`, and `gb ` each count 0, and an
+   * empty string was dropped by the handler into an unfiltered count. `Britain`
+   * and ` GB` are in the list on shape rather than silence — the first draws an
+   * upstream 400, the second is trimmed upstream and answers correctly — so the
+   * schema states one accepted form rather than one form plus whatever GBIF
+   * happens to tolerate.
+   */
+  it('rejects country forms outside the canonical uppercase alpha-2 shape', () => {
+    for (const bad of ['gb', 'Us', 'uS', 'USA', 'GBR', 'Britain', 'gb ', ' GB', '']) {
+      expect(() => gbifCountOccurrences.input.parse({ country: bad })).toThrow();
+    }
+    expect(() => gbifCountOccurrences.input.parse({ country: 'GB' })).not.toThrow();
+  });
+
+  /**
    * A zero count is the shape that misleads hardest here: it reads as "this region
    * holds nothing" when it may only mean the verbatim string was misspelled.
    */

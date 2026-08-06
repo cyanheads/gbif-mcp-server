@@ -168,6 +168,33 @@ describe('gbifSearchDatasets', () => {
     );
   });
 
+  /**
+   * #51 — `/dataset/search` carries the same silent-zero hole as
+   * `/occurrence/search`: it parses the code, then matches the verbatim stored
+   * one. `GB` returns 2,416 datasets while `gb`, `Gb`, `gB`, `gbr`, `GBR`, and
+   * `USA` each return 0, with nothing in the response marking the filter as
+   * malformed. `AA`, `XK`, `XZ`, and `ZZ` stay out of this list — GBIF assigns
+   * all four (`/enumeration/basic/Country` carries them alongside the 249
+   * officially assigned ISO codes) and `ZZ` has 148 real datasets, so a zero
+   * there is an empty bucket.
+   */
+  it('rejects publishingCountry forms GBIF would answer with a silent zero', () => {
+    for (const bad of ['gb', 'Gb', 'gB', 'gbr', 'GBR', 'USA', 'gb ']) {
+      expect(() => gbifSearchDatasets.input.parse({ publishingCountry: bad })).toThrow();
+    }
+    expect(() => gbifSearchDatasets.input.parse({ publishingCountry: 'GB' })).not.toThrow();
+    expect(() => gbifSearchDatasets.input.parse({ publishingCountry: 'ZZ' })).not.toThrow();
+  });
+
+  /**
+   * The empty string is the worse half: the handler's `?.trim()` guard dropped it
+   * from the query, so a caller who believed they had filtered by publisher
+   * country got all 123,527 indexed datasets back.
+   */
+  it('rejects an empty publishingCountry rather than dropping it into an unfiltered search', () => {
+    expect(() => gbifSearchDatasets.input.parse({ publishingCountry: '' })).toThrow();
+  });
+
   it('handles sparse dataset records', async () => {
     mockSearchDatasets.mockResolvedValue({
       results: [{ key: 'sparse-key' }],

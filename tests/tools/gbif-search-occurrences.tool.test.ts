@@ -530,6 +530,24 @@ describe('gbifSearchOccurrences', () => {
   });
 
   /**
+   * #50 — `country` was the last filter here answering a malformed value with a
+   * confident wrong number. Against taxonKey=212 + occurrenceStatus=PRESENT, `GB`
+   * matches 60,290,950 records while `gb`, `Us`, `USA`, and `gb ` each match none.
+   * The empty string was the worse case: the handler's `?.trim()` guard dropped it,
+   * so a caller who believed they had filtered by country got the unfiltered total.
+   * `Britain` and ` GB` are in the list on shape rather than silence — the first
+   * draws an upstream 400, the second is trimmed upstream and answers correctly —
+   * so the schema states one accepted form rather than one form plus whatever
+   * GBIF happens to tolerate.
+   */
+  it('rejects country forms outside the canonical uppercase alpha-2 shape', () => {
+    for (const bad of ['gb', 'Us', 'uS', 'USA', 'GBR', 'Britain', 'gb ', ' GB', '']) {
+      expect(() => gbifSearchOccurrences.input.parse({ taxonKey: 212, country: bad })).toThrow();
+    }
+    expect(() => gbifSearchOccurrences.input.parse({ taxonKey: 212, country: 'GB' })).not.toThrow();
+  });
+
+  /**
    * stateProvince has no vocabulary to validate against — GBIF stores each dataset's
    * verbatim string, so no pattern separates a typo from a real value and an
    * unmatched one returns zero records rather than an error. The guard is therefore

@@ -32,10 +32,23 @@ export const gbifSearchPublishers = tool('gbif_search_publishers', {
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     q: z.string().optional().describe('Name fragment to search for. Matches organization names.'),
+    /**
+     * Deliberately unpatterned, unlike the country codes on the occurrence tools
+     * and `publishingCountry` on `gbif_search_datasets`. Those hit
+     * `/occurrence/search` and `/dataset/search`, which parse a code and then
+     * match the verbatim stored string, so `gb` and `GBR` answer 200 with zero
+     * rows — a silent wrong answer a `^[A-Z]{2}$` pattern removes.
+     * `/organization` resolves the parsed country instead of the string: `gb`
+     * returns the same 223 organizations as `GB`, and `USA` the same 499 as
+     * `US`. There is no silent case here to close, so the same pattern would
+     * only reject values that currently answer correctly.
+     */
     country: z
       .string()
       .optional()
-      .describe('ISO 3166-1 alpha-2 country code to filter organizations by country.'),
+      .describe(
+        'ISO 3166-1 country code to filter organizations by country. The alpha-2 form ("GB") is canonical; unlike the country codes on the occurrence tools and gbif_search_datasets, this one also resolves the alpha-3 form ("GBR") and is case-insensitive, because the registry endpoint matches the parsed country rather than the string. A value GBIF cannot parse as a country errors rather than returning an empty list.',
+      ),
     limit: z
       .number()
       .min(1)

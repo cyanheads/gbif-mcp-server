@@ -35,8 +35,8 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
   title: 'Search Occurrences',
   description:
     'Search 3.9B+ GBIF occurrence records with Darwin Core filters. Use taxonKey from gbif_match_species ' +
-    'for reliable results — it resolves synonyms automatically. Accepts country (ISO 3166-1 alpha-2, where ' +
-    "the record was observed), publishingCountry (the publishing organization's country — a different " +
+    'for reliable results — it resolves synonyms automatically. Accepts country (uppercase ISO 3166-1 ' +
+    "alpha-2, where the record was observed), publishingCountry (the publishing organization's country — a different " +
     'question), stateProvince, bounding box (decimalLatitude/decimalLongitude ranges), WKT polygon ' +
     'geometry, year range, month, ' +
     'basis of record, coordinate filter, and dataset key. Returns sightings only by default — GBIF also ' +
@@ -62,13 +62,20 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       ),
     country: z
       .string()
+      .regex(
+        /^[A-Z]{2}$/,
+        'country must be an uppercase ISO 3166-1 alpha-2 code such as GB, US, or SE. Lowercase ("gb"), alpha-3 ("USA"), and country names ("Britain") match no records upstream.',
+      )
       .optional()
       .describe(
-        'ISO 3166-1 alpha-2 code of where the occurrence was recorded (e.g., "GB", "US", "DE", "SE"). Not the publisher\'s country — that is publishingCountry, and the two disagree on most records.',
+        'ISO 3166-1 alpha-2 code, uppercase, of where the occurrence was recorded (e.g., "GB", "US", "DE", "SE"). Not the publisher\'s country — that is publishingCountry, and the two disagree on most records. Lowercase and alpha-3 forms ("gb", "USA") match nothing upstream, which is why only the uppercase two-letter form is accepted here. Take a value from a COUNTRY facet on gbif_occurrence_facets; an uppercase pair GBIF does not know ("XX") is rejected upstream by name.',
       ),
     publishingCountry: z
       .string()
-      .regex(/^[A-Z]{2}$/)
+      .regex(
+        /^[A-Z]{2}$/,
+        'publishingCountry must be an uppercase ISO 3166-1 alpha-2 code such as GB, US, or SE. Lowercase ("us"), alpha-3 ("USA"), and country names ("Britain") match no records upstream.',
+      )
       .optional()
       .describe(
         'ISO 3166-1 alpha-2 code, uppercase, of the organization that published the record — not where the occurrence was observed, which is country. The two differ constantly: of 60,290,950 records observed in GB, 1,548,928 were published by US organizations. Take a value from a PUBLISHING_COUNTRY facet on gbif_occurrence_facets. Lowercase and alpha-3 forms ("us", "USA") match nothing upstream, which is why only the uppercase two-letter form is accepted here.',
@@ -299,9 +306,9 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
     {
       reason: 'invalid_filter',
       code: JsonRpcErrorCode.InvalidParams,
-      when: 'A filter value is unusable — a datasetKey that is not a UUID, or a WKT geometry or range GBIF rejects.',
+      when: 'A filter value is unusable — a datasetKey that is not a UUID, a two-letter country or publishingCountry code GBIF does not know, or a WKT geometry or range GBIF rejects.',
       recovery:
-        'The message names the rejected value. Correct that one filter: geometry is a closed WKT ring in longitude latitude order, ranges are "min,max", and datasetKey is a UUID from gbif_search_datasets.',
+        'The message names the rejected value. Correct that one filter: geometry is a closed WKT ring in longitude latitude order, ranges are "min,max", datasetKey is a UUID from gbif_search_datasets, and country and publishingCountry are codes GBIF assigns — take one from a COUNTRY or PUBLISHING_COUNTRY facet on gbif_occurrence_facets.',
     },
   ],
 
@@ -333,7 +340,7 @@ export const gbifSearchOccurrences = tool('gbif_search_occurrences', {
       {
         ...(input.taxonKey !== undefined && { taxonKey: input.taxonKey }),
         ...(input.scientificName?.trim() && { scientificName: input.scientificName }),
-        ...(input.country?.trim() && { country: input.country }),
+        ...(input.country && { country: input.country }),
         ...(input.publishingCountry && { publishingCountry: input.publishingCountry }),
         ...(input.stateProvince?.trim() && { stateProvince: input.stateProvince }),
         ...(input.decimalLatitude?.trim() && { decimalLatitude: input.decimalLatitude }),

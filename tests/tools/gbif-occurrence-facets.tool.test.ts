@@ -333,6 +333,25 @@ describe('gbifOccurrenceFacets', () => {
   });
 
   /**
+   * #50 — a scope filter that silently matches nothing makes every bucket wrong at
+   * once. Against taxonKey=212 + occurrenceStatus=PRESENT, `GB` scopes 60,290,950
+   * records while `gb`, `Us`, `USA`, and `gb ` each scope none, and an empty string
+   * was dropped by the handler into an unscoped aggregation. `Britain` and ` GB`
+   * are in the list on shape rather than silence — the first draws an upstream
+   * 400, the second is trimmed upstream and answers correctly — so the schema
+   * states one accepted form rather than one form plus whatever GBIF happens to
+   * tolerate.
+   */
+  it('rejects country forms outside the canonical uppercase alpha-2 shape', () => {
+    for (const bad of ['gb', 'Us', 'uS', 'USA', 'GBR', 'Britain', 'gb ', ' GB', '']) {
+      expect(() => gbifOccurrenceFacets.input.parse({ facet: 'COUNTRY', country: bad })).toThrow();
+    }
+    expect(() =>
+      gbifOccurrenceFacets.input.parse({ facet: 'COUNTRY', country: 'GB' }),
+    ).not.toThrow();
+  });
+
+  /**
    * The empty-facet notice alone says the scope may match nothing — which is true but
    * does not tell a caller that a verbatim, case-sensitive stateProvince is the
    * likeliest reason, nor where to get the exact string.

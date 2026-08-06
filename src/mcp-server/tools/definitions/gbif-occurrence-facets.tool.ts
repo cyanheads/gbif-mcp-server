@@ -47,7 +47,8 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
     'facetLimit at facetOffset 0, a later slice of the same ranking past that. No record payloads returned. ' +
     'Core tool for distribution analysis and trend queries: "which countries have the most records ' +
     'for this species?", "how has observation volume changed since 2010?". ' +
-    'Scope the aggregation with taxonKey, country, publishingCountry, stateProvince, year, ' +
+    'Scope the aggregation with taxonKey, country (uppercase ISO 3166-1 alpha-2), ' +
+    'publishingCountry, stateProvince, year, ' +
     'geometry, basisOfRecord, datasetKey, ' +
     'occurrenceStatus, or iucnRedListCategory filters. Also the way to split a result set too ' +
     'large for gbif_search_occurrences to page (offset+limit caps at 100,001): facet by ' +
@@ -69,13 +70,20 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
       ),
     country: z
       .string()
+      .regex(
+        /^[A-Z]{2}$/,
+        'country must be an uppercase ISO 3166-1 alpha-2 code such as GB, US, or SE. Lowercase ("gb"), alpha-3 ("USA"), and country names ("Britain") match no records upstream.',
+      )
       .optional()
       .describe(
-        "ISO 3166-1 alpha-2 code of where the occurrence was recorded, to scope to one country. Not the publisher's country — that is publishingCountry, and the two disagree on most records.",
+        'ISO 3166-1 alpha-2 code, uppercase, of where the occurrence was recorded, to scope to one country. Not the publisher\'s country — that is publishingCountry, and the two disagree on most records. Scope to one country, or pass back a value this tool returned under facet COUNTRY to drill into that bucket. Lowercase and alpha-3 forms ("gb", "USA") match nothing upstream, which is why only the uppercase two-letter form is accepted here.',
       ),
     publishingCountry: z
       .string()
-      .regex(/^[A-Z]{2}$/)
+      .regex(
+        /^[A-Z]{2}$/,
+        'publishingCountry must be an uppercase ISO 3166-1 alpha-2 code such as GB, US, or SE. Lowercase ("us"), alpha-3 ("USA"), and country names ("Britain") match no records upstream.',
+      )
       .optional()
       .describe(
         'ISO 3166-1 alpha-2 code, uppercase, of the organization that published the record — not where the occurrence was observed, which is country. Scope to one publisher country, or pass back a value this tool returned under facet PUBLISHING_COUNTRY to drill into that bucket. Lowercase and alpha-3 forms ("us", "USA") match nothing upstream, which is why only the uppercase two-letter form is accepted here.',
@@ -177,9 +185,9 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
     {
       reason: 'invalid_filter',
       code: JsonRpcErrorCode.InvalidParams,
-      when: 'datasetKey is not a UUID, or GBIF rejected the geometry or year scope as malformed.',
+      when: 'datasetKey is not a UUID, a two-letter country or publishingCountry code is one GBIF does not know, or GBIF rejected the geometry or year scope as malformed.',
       recovery:
-        'The message names the rejected value. Correct that one scope filter: geometry is a closed WKT ring in longitude latitude order, year is a single year or "min,max", and datasetKey is a UUID from gbif_search_datasets.',
+        'The message names the rejected value. Correct that one scope filter: geometry is a closed WKT ring in longitude latitude order, year is a single year or "min,max", datasetKey is a UUID from gbif_search_datasets, and country and publishingCountry are codes GBIF assigns — take one from a COUNTRY or PUBLISHING_COUNTRY facet.',
     },
   ],
 
@@ -197,7 +205,7 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
       {
         facet: input.facet,
         ...(input.taxonKey !== undefined && { taxonKey: input.taxonKey }),
-        ...(input.country?.trim() && { country: input.country }),
+        ...(input.country && { country: input.country }),
         ...(input.publishingCountry && { publishingCountry: input.publishingCountry }),
         ...(input.stateProvince?.trim() && { stateProvince: input.stateProvince }),
         ...(input.year?.trim() && { year: input.year }),

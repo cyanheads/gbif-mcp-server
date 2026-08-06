@@ -39,7 +39,7 @@
 | `gbif_count_occurrences` | Count occurrences matching a filter without fetching records — fast single-number response, filtered to sightings by default |
 | `gbif_get_occurrence` | Fetch a single occurrence record by key — full Darwin Core record with GADM geography, presence/absence status, conservation status, media, and quality flags |
 | `gbif_occurrence_facets` | Aggregate occurrence counts by a dimension — country, year, basis of record, dataset, kingdom, presence/absence, IUCN Red List category |
-| `gbif_search_datasets` | Search GBIF datasets by keyword, type, country, or publishing organization |
+| `gbif_search_datasets` | Search GBIF datasets by keyword, type, country, or hosting organization |
 | `gbif_get_dataset` | Fetch full dataset metadata by UUID — title, description, citation, contacts, license, DOI, coverage |
 | `gbif_search_publishers` | Search GBIF-registered publishing organizations by name fragment or country |
 
@@ -118,8 +118,9 @@ List direct children of a backbone taxon.
 Search 3.9B+ GBIF occurrence records with full Darwin Core filtering.
 
 - Use `taxonKey` from `gbif_match_species` for reliable results — resolves synonyms automatically; `scientificName` filter does not
-- Geographic filters: `country` (ISO 3166-1 alpha-2), `stateProvince`, bounding box (`decimalLatitude`/`decimalLongitude` ranges as "min,max"), or WKT polygon (`geometry`)
+- Geographic filters: `country` (ISO 3166-1 alpha-2, uppercase), `stateProvince`, bounding box (`decimalLatitude`/`decimalLongitude` ranges as "min,max"), or WKT polygon (`geometry`)
 - `publishingCountry` (ISO 3166-1 alpha-2, uppercase) is the country of the *publishing organization*, not of the observation — a different question from `country`, and the two disagree on most records: of 60,290,950 records observed in GB, 1,548,928 were published by US organizations
+- Both country filters take the uppercase two-letter form only. GBIF parses a lowercase or alpha-3 code and then matches the verbatim string, so `gb` and `USA` return zero records instead of an error; the schema pattern turns that silent wrong answer into a validation error naming the accepted form. A two-letter code GBIF does not assign (`XX`) is rejected upstream by name and surfaces as `invalid_filter`
 - `stateProvince` is matched verbatim — exact and case-sensitive, with no controlled vocabulary behind it. Take a value from a `STATE_PROVINCE` facet rather than guessing; an unmatched value returns zero records instead of an error, and the enrichment notice says so when it happens
 - Temporal filters: `year` as single year or range, `month` (1–12) for seasonal queries
 - `basisOfRecord` enum: `HUMAN_OBSERVATION`, `PRESERVED_SPECIMEN`, `MACHINE_OBSERVATION`, and more
@@ -136,7 +137,7 @@ Search 3.9B+ GBIF occurrence records with full Darwin Core filtering.
 Count occurrences matching a filter without fetching any records.
 
 - Backed by `/occurrence/search` at `limit=0` — no record payload, and the same endpoint `gbif_search_occurrences` queries, so the two agree on the same question. GBIF's dedicated `/occurrence/count` endpoint takes a closed parameter set that rejects `occurrenceStatus` and `iucnRedListCategory` outright
-- Supported filters: `taxonKey`, `country`, `publishingCountry`, `stateProvince`, `isGeoreferenced`, `datasetKey`, `year`, `occurrenceStatus`, `iucnRedListCategory`
+- Supported filters: `taxonKey`, `country`, `publishingCountry`, `stateProvince`, `isGeoreferenced`, `datasetKey`, `year`, `occurrenceStatus`, `iucnRedListCategory`. `country` and `publishingCountry` take the uppercase alpha-2 form only, for the reason given under `gbif_search_occurrences`
 - Counts sightings only by default, matching `gbif_search_occurrences`. For absence-heavy taxa the unfiltered figure is a different question entirely — *Radicipes gracilis* has 2,351,582 indexed records of which 79 are presences
 - Use to assess result set size before deciding whether to paginate a full search. A count above 100,001 means paging cannot reach the end of it, and the enrichment notice says so and names the partition route
 
@@ -162,7 +163,7 @@ Fetch a single occurrence record by GBIF occurrence key.
 Aggregate occurrence counts across a dimension.
 
 - Facets: `COUNTRY`, `STATE_PROVINCE`, `YEAR`, `BASIS_OF_RECORD`, `DATASET_KEY`, `KINGDOM_KEY`, `PHYLUM_KEY`, `CLASS_KEY`, `ORDER_KEY`, `FAMILY_KEY`, `GENUS_KEY`, `SPECIES_KEY`, `PUBLISHING_COUNTRY`, `MONTH`, `OCCURRENCE_STATUS`, `IUCN_RED_LIST_CATEGORY`
-- Scope with `taxonKey`, `country`, `publishingCountry`, `stateProvince`, `year`, `geometry`, `basisOfRecord`, `datasetKey`, `occurrenceStatus`, or `iucnRedListCategory` filters — so a `PUBLISHING_COUNTRY` or `STATE_PROVINCE` bucket can be passed straight back to drill into it
+- Scope with `taxonKey`, `country`, `publishingCountry`, `stateProvince`, `year`, `geometry`, `basisOfRecord`, `datasetKey`, `occurrenceStatus`, or `iucnRedListCategory` filters — so a `COUNTRY`, `PUBLISHING_COUNTRY`, or `STATE_PROVINCE` bucket can be passed straight back to drill into it. `country` and `publishingCountry` take the uppercase alpha-2 form only, for the reason given under `gbif_search_occurrences`
 - Aggregates sightings only by default, matching the search and count tools. To measure the presence/absence split itself, pass `facet: OCCURRENCE_STATUS` with `occurrenceStatus: ANY`
 - Returns one page of values ranked by count descending — up to `facetLimit` (max 100), the top ones only while `facetOffset` is 0 — with no record payloads
 - `DATASET_KEY` is the basis for splitting a result set too large for `gbif_search_occurrences` to page: every occurrence carries exactly one `datasetKey`, so its buckets sum to the scope's full total, and it has the cardinality to cut a large scope into pageable pieces. `BASIS_OF_RECORD` and `PUBLISHING_COUNTRY` are gap-free too and both have a matching filter on the occurrence tools, so either can drive a further split of a bucket still over the cap — but on that scope they return 9 and 41 buckets against `DATASET_KEY`'s 550, too coarse for the first cut. A dimension a record can lack drops that record: a 60,290,950-record scope faceted by `YEAR` sums to 59,407,400, leaving 883,550 undated records out, and `MONTH`, `STATE_PROVINCE`, and `SPECIES_KEY` behave the same way — `STATE_PROVINCE` included, even though the occurrence tools can filter on it
@@ -174,12 +175,13 @@ Aggregate occurrence counts across a dimension.
 
 ### `gbif_search_datasets`
 
-Search GBIF datasets by keyword, type, country, or publishing organization.
+Search GBIF datasets by keyword, type, country, or hosting organization.
 
-- Filters: free-text query, dataset type (`OCCURRENCE`, `CHECKLIST`, `METADATA`, `SAMPLING_EVENT`), publishing country, hosting organization UUID
+- Filters: free-text query, dataset type (`OCCURRENCE`, `CHECKLIST`, `METADATA`, `SAMPLING_EVENT`), `publishingCountry` (ISO 3166-1 alpha-2, uppercase), hosting organization UUID
+- `publishingCountry` takes the uppercase two-letter form only, for the same reason the occurrence filters do: `/dataset/search` matches the verbatim stored code, so `gb` and `GBR` return zero datasets where `GB` returns 2,416. A two-letter code GBIF does not assign (`XX`) is rejected upstream by name and surfaces as `invalid_filter`
 - Returns title, type, description, license, DOI, and record count. `recordCount` spans every `occurrenceStatus`, absences included — `gbif_count_occurrences` with the same key counts sightings only by default, so the two figures differ by design
 - The `description` is a 300-character preview — `descriptionTruncated` flags when it was shortened, and `gbif_get_dataset` returns the full text
-- Use `hostingOrg` from `gbif_search_publishers` to scope to datasets from one organization
+- Use `hostingOrg` from `gbif_search_publishers` to scope to the datasets one organization hosts — the hosting organization runs the installation a dataset is served from, which is often not the organization that published it
 - Paginated — limit up to 1000
 
 ---
@@ -202,7 +204,8 @@ Fetch full dataset metadata by UUID.
 Search organizations registered with GBIF.
 
 - Filter by name fragment or country
-- Returns organization key, title, and country — sufficient to chain into `gbif_search_datasets` with `hostingOrg`
+- `country` here is unconstrained on purpose: the registry endpoint matches the *parsed* country rather than the verbatim string, so `gb`, `GBR`, and `GB` all return the same 223 organizations. The uppercase-only rule the occurrence tools and `gbif_search_datasets` carry exists to close a silent zero that does not occur on this route
+- Returns organization key, title, and country. The key chains into `gbif_search_datasets` as `hostingOrg`, which matches only datasets the organization *hosts* — an organization that publishes datasets hosted elsewhere returns none
 - Paginated — limit up to 1000
 
 ## Resources
