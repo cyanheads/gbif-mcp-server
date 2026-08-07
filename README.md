@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.7.1-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/gbif-biodiversity-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.30.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/gbif-biodiversity-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/gbif-biodiversity-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.14-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.7.2-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/gbif-biodiversity-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.30.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/gbif-biodiversity-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/gbif-biodiversity-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.14-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -32,7 +32,7 @@
 | `gbif_match_species` | Match a species name against the GBIF backbone taxonomy — returns taxonKey, confidence score, and full classification |
 | `gbif_bulk_match_species` | Match up to 50 scientific names to backbone taxon keys in one call — results in input order, per-name NONE/ERROR isolation |
 | `gbif_get_species` | Fetch a single backbone taxon by key — full classification, authorship, synonymy, vernacular name, descendant count |
-| `gbif_search_species` | Search or browse the GBIF backbone taxonomy by name fragment, rank, kingdom, family, or genus |
+| `gbif_search_species` | Search or browse the GBIF backbone taxonomy by name fragment, rank, or a kingdom, family, or genus name resolved to its backbone key |
 | `gbif_get_species_classification` | Return the root-to-parent classification chain for a taxon — root-first ordered array from kingdom to the queried taxon's immediate parent (the taxon itself is not included) |
 | `gbif_get_species_children` | List direct children of a backbone taxon — genera within a family, species within a genus |
 | `gbif_search_occurrences` | Search 3.9B+ GBIF occurrence records with Darwin Core filters — country, publishing country, state/province, bounding box, WKT geometry, year, month, basis of record, presence/absence, IUCN Red List category |
@@ -87,9 +87,11 @@ Search or browse the GBIF backbone taxonomy.
 
 - Accepts name fragments matching scientific and vernacular names
 - Filter by rank, kingdom, family, or genus to scope browsing
+- `kingdom`, `family`, and `genus` are given as names and resolved to a backbone key before the search runs, since `/species/search` scopes by key alone. The narrowest one supplied is what scopes — the three nest, and GBIF combines two keys with OR rather than AND. `kingdom` supplied beside `family` or `genus` disambiguates that name instead of scoping on its own: `Prunella` names both a bird genus and a plant genus and resolves to neither without it
+- Names are matched exactly and capitalized as GBIF writes them, so `paridae` and `Paridaee` fail as `unresolved_taxon_scope` rather than being ignored. An alternative family name lands on the taxon it is a synonym of — `Compositae` scopes to Asteraceae. A `family` and `genus` in different lineages fail as `conflicting_taxon_scope`. The scope actually applied comes back in the enrichment
 - `isExtinct` filter for extinct vs. extant taxa
-- Scope to a specific checklist dataset with `datasetKey` — omit the field for the GBIF backbone
-- `q` and `datasetKey` are rejected when supplied blank rather than dropped: a blank `datasetKey` returns the unfiltered backbone result, and `q=` returns the whole 46,623,747-name index where `q=` with a space returns nothing. Omit a filter to leave it off — see the note under `gbif_search_occurrences`
+- Scope to a specific checklist dataset with `datasetKey` — omit the field for the GBIF backbone. GBIF reads a higher-taxon key inside the checklist that key belongs to, so pairing `datasetKey` with a kingdom, family, or genus matches nothing unless the checklist is the backbone; the empty-result notice says so
+- `q`, `kingdom`, `family`, `genus`, and `datasetKey` are rejected when supplied blank rather than dropped: a blank `datasetKey` returns the unfiltered backbone result, and `q=` returns the whole 46,623,754-name index where `q=` with a space returns nothing. Omit a filter to leave it off — see the note under `gbif_search_occurrences`
 - Paginated — limit up to 1000, use offset to walk through large groups
 
 ---

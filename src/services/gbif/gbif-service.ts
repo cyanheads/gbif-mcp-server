@@ -217,13 +217,30 @@ export class GbifService {
     return this.getJson<RawSpeciesRecord>(url, ctx);
   }
 
+  /**
+   * `/species/search` scopes to a higher taxon by key and by nothing else.
+   *
+   * It carries no `kingdom`, `family`, or `genus` parameter — nor `kingdomKey`,
+   * `familyKey`, `genusKey`, `phylumKey`, `taxonKey`, or `parentKey`. Every one of
+   * those names is unrecognized, and an unrecognized name is ignored rather than
+   * rejected: each answers 200 with the same 46,623,754 names an invented
+   * `bogusParam=zzz` returns, where the implemented `rank=FAMILY` returns 558,589.
+   * `higherTaxonKey` is the one that scopes — `higherTaxonKey=6` (Plantae) returns
+   * 2,101,916 and `higherTaxonKey=2877951` (Quercus) returns 6,059 — and it takes a
+   * key, so a caller working from a name resolves it through `/species/match` first.
+   *
+   * The key is read within one checklist rather than across all of them, so a
+   * backbone key scopes backbone names: `higherTaxonKey=9327` (Paridae) returns the
+   * same 641 names with and without the backbone `datasetKey`, and 0 against another
+   * checklist's. Repeated values are OR-ed, not intersected — `higherTaxonKey=1` and
+   * `higherTaxonKey=6` together return 6,534,100, exactly their sum — so only one is
+   * sent.
+   */
   searchSpecies(
     params: {
       q?: string;
       rank?: string;
-      kingdom?: string;
-      family?: string;
-      genus?: string;
+      higherTaxonKey?: number;
       isExtinct?: boolean;
       datasetKey?: string;
       limit?: number;
@@ -234,9 +251,7 @@ export class GbifService {
     const queryParams: Record<string, unknown> = {};
     if (params.q) queryParams.q = params.q;
     if (params.rank) queryParams.rank = params.rank;
-    if (params.kingdom) queryParams.kingdom = params.kingdom;
-    if (params.family) queryParams.family = params.family;
-    if (params.genus) queryParams.genus = params.genus;
+    if (params.higherTaxonKey !== undefined) queryParams.higherTaxonKey = params.higherTaxonKey;
     if (params.isExtinct !== undefined) queryParams.isExtinct = params.isExtinct;
     if (params.datasetKey) queryParams.datasetKey = params.datasetKey;
     if (params.limit !== undefined) queryParams.limit = params.limit;

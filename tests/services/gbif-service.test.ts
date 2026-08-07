@@ -503,4 +503,28 @@ describe('GbifService occurrence filter pass-through', () => {
     expect(params.has('publishingOrg')).toBe(false);
     expect(params.has('hostingOrg')).toBe(false);
   });
+
+  /**
+   * #55 — the defect was a parameter that never reached the wire under a name
+   * `/species/search` recognizes, and that endpoint answers 200 with the unfiltered
+   * index for a name it does not, so nothing downstream can tell. The tool tests
+   * mock this service away, which leaves the forward itself covered nowhere else:
+   * drop the `higherTaxonKey` line from `searchSpecies` and every one of them still
+   * passes while the search silently widens back to the whole backbone. These assert
+   * the name leaves the process; that GBIF honors it is a live-API property.
+   */
+  it('sends higherTaxonKey under its own name on searchSpecies', async () => {
+    await service().searchSpecies({ higherTaxonKey: 9327, rank: 'GENUS' }, createMockContext());
+
+    const params = sentParams();
+    expect(params.get('higherTaxonKey')).toBe('9327');
+    expect(params.get('rank')).toBe('GENUS');
+  });
+
+  it('omits higherTaxonKey when the caller supplies no taxon scope', async () => {
+    await service().searchSpecies({ q: 'Aves' }, createMockContext());
+
+    const params = sentParams();
+    expect(params.has('higherTaxonKey')).toBe(false);
+  });
 });

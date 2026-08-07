@@ -210,10 +210,10 @@ describe('UUID-typed inputs reject before reaching GBIF', () => {
  * returns all 123,527 — the guard still fires, because one space between the whole
  * index and an empty page is not a distinction a caller can plan around.
  *
- * `gbif_search_species` exposes `kingdom`, `family`, and `genus` and they are
- * deliberately absent from this table: `/species/search` implements none of the
- * three, answering identically to an invented parameter name (46,623,747 either
- * way), so there is no filter for a blank value to drop.
+ * `gbif_search_species` exposes `kingdom`, `family`, and `genus`, and they join the
+ * table now that they scope: each is resolved to a backbone key and forwarded as
+ * `higherTaxonKey`, so a blank one names no taxon. Rejecting it by field beats
+ * reporting that the empty string matched no backbone family.
  */
 describe('Blank filters reject before reaching GBIF', () => {
   const mockCall = vi.fn();
@@ -262,7 +262,12 @@ describe('Blank filters reject before reaching GBIF', () => {
         geometry: 'POLYGON((-2 50,-1 50,-1 51,-2 51,-2 50))',
       },
     },
-    { name: 'gbif_search_species', def: gbifSearchSpecies, extra: {}, fields: { q: 'Aves' } },
+    {
+      name: 'gbif_search_species',
+      def: gbifSearchSpecies,
+      extra: {},
+      fields: { q: 'Aves', kingdom: 'Animalia', family: 'Paridae', genus: 'Parus' },
+    },
     { name: 'gbif_search_datasets', def: gbifSearchDatasets, extra: {}, fields: { q: 'moths' } },
     {
       name: 'gbif_search_publishers',
