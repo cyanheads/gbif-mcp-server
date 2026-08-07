@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.7.2](changelog/0.7.x/0.7.2.md) — 2026-08-06
+
+kingdom, family, and genus on gbif_search_species now scope the search — each name is resolved to a GBIF backbone key and the narrowest is forwarded as higherTaxonKey, the parameter /species/search actually implements.
+
 ## [0.7.1](changelog/0.7.x/0.7.1.md) — 2026-08-06
 
 gbif_search_datasets gains a publishingOrg filter, so an organization key from gbif_search_publishers reaches the datasets that organization published; every optional filter across the seven filtering tools now rejects a blank value instead of dropping it and answering the unfiltered scope.
