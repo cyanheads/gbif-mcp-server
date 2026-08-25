@@ -3,7 +3,7 @@
  * @module tests/tools/gbif-get-dataset.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gbifGetDataset } from '@/mcp-server/tools/definitions/gbif-get-dataset.tool.js';
 
@@ -298,6 +298,60 @@ describe('gbifGetDataset', () => {
     expect(result.contacts).toBeUndefined();
     expect(result.contactsTotal).toBeUndefined();
     expect(result.contactsReturned).toBeUndefined();
+  });
+
+  it('discloses contact truncation in enrichment when the cap holds contacts back', async () => {
+    mockGetDataset.mockResolvedValue({ key: EBIRD_KEY, contacts: makeContacts(42) });
+
+    const ctx = createMockContext({ errors: gbifGetDataset.errors });
+    const input = gbifGetDataset.input.parse({ datasetKey: EBIRD_KEY });
+    await gbifGetDataset.handler(input, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.truncated).toBe(true);
+    expect(enrichment.shown).toBe(10);
+    expect(enrichment.cap).toBe(10);
+    expect(enrichment.notice).toContain('Showing 10 of 42 dataset contacts');
+  });
+
+  it('discloses truncation when contactLimit is 0 but the dataset has contacts', async () => {
+    // The caller suppressed contact detail; the fact that 42 exist is still news.
+    mockGetDataset.mockResolvedValue({ key: EBIRD_KEY, contacts: makeContacts(42) });
+
+    const ctx = createMockContext({ errors: gbifGetDataset.errors });
+    const input = gbifGetDataset.input.parse({ datasetKey: EBIRD_KEY, contactLimit: 0 });
+    await gbifGetDataset.handler(input, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.truncated).toBe(true);
+    expect(enrichment.shown).toBe(0);
+    expect(enrichment.cap).toBe(0);
+  });
+
+  it('discloses no truncation when the contact count exactly meets the cap', async () => {
+    mockGetDataset.mockResolvedValue({ key: INAT_KEY, contacts: makeContacts(10) });
+
+    const ctx = createMockContext({ errors: gbifGetDataset.errors });
+    const input = gbifGetDataset.input.parse({ datasetKey: INAT_KEY, contactLimit: 10 });
+    const result = await gbifGetDataset.handler(input, ctx);
+
+    expect(result.contactsReturned).toBe(10);
+    expect(result.contactsTotal).toBe(10);
+    // Every contact came back — a full list is not a capped one.
+    expect(getEnrichment(ctx).truncated).toBeUndefined();
+  });
+
+  it('discloses no truncation when the dataset has no contacts', async () => {
+    mockGetDataset.mockResolvedValue({ key: INAT_KEY, contacts: [] });
+
+    const ctx = createMockContext({ errors: gbifGetDataset.errors });
+    const input = gbifGetDataset.input.parse({ datasetKey: INAT_KEY });
+    await gbifGetDataset.handler(input, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.truncated).toBeUndefined();
+    expect(enrichment.shown).toBeUndefined();
+    expect(enrichment.cap).toBeUndefined();
   });
 
   it('formats the contact count summary', () => {

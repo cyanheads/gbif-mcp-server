@@ -51,7 +51,10 @@ describe('gbifOccurrenceFacets', () => {
     const enrichment = getEnrichment(ctx);
     expect(enrichment.facetLimit).toBe(10); // default
     expect(enrichment.facetOffset).toBe(0); // default
-    expect(enrichment.moreValuesLikely).toBe(false); // 3 counts < facetLimit 10
+    // 3 counts < facetLimit 10, so nothing was capped and no truncation is disclosed.
+    expect(enrichment.truncated).toBeUndefined();
+    expect(enrichment.shown).toBeUndefined();
+    expect(enrichment.cap).toBeUndefined();
     // The PRESENT default is announced, so a populated aggregation still carries a notice.
     expect(enrichment.occurrenceStatus).toBe('PRESENT');
     expect(enrichment.notice).toContain('Absence records');
@@ -520,7 +523,7 @@ describe('gbifOccurrenceFacets', () => {
     );
   });
 
-  it('flags moreValuesLikely when the page fills facetLimit', async () => {
+  it('discloses truncation when the page fills facetLimit', async () => {
     mockGetOccurrenceFacets.mockResolvedValue({
       count: 3112676,
       facets: [
@@ -539,10 +542,13 @@ describe('gbifOccurrenceFacets', () => {
     const input = gbifOccurrenceFacets.input.parse({ facet: 'DATASET_KEY', facetLimit: 3 });
     await gbifOccurrenceFacets.handler(input, ctx);
 
-    expect(getEnrichment(ctx).moreValuesLikely).toBe(true);
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.truncated).toBe(true);
+    expect(enrichment.shown).toBe(3);
+    expect(enrichment.cap).toBe(3);
   });
 
-  it('does not flag moreValuesLikely when the page is not full', async () => {
+  it('does not disclose truncation when the page is not full', async () => {
     mockGetOccurrenceFacets.mockResolvedValue({
       count: 100,
       facets: [{ field: 'DATASET_KEY', counts: [{ name: 'ds-1', count: 100 }] }],
@@ -552,7 +558,85 @@ describe('gbifOccurrenceFacets', () => {
     const input = gbifOccurrenceFacets.input.parse({ facet: 'DATASET_KEY', facetLimit: 3 });
     await gbifOccurrenceFacets.handler(input, ctx);
 
-    expect(getEnrichment(ctx).moreValuesLikely).toBe(false);
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.truncated).toBeUndefined();
+    expect(enrichment.shown).toBeUndefined();
+    expect(enrichment.cap).toBeUndefined();
+  });
+
+  it('names the next facetOffset in the truncation notice, advanced past the current page', async () => {
+    mockGetOccurrenceFacets.mockResolvedValue({
+      count: 3112676,
+      facets: [
+        {
+          field: 'DATASET_KEY',
+          counts: [
+            { name: 'ds-4', count: 6000 },
+            { name: 'ds-5', count: 5000 },
+            { name: 'ds-6', count: 4000 },
+          ],
+        },
+      ],
+    });
+
+    const ctx = createMockContext();
+    const input = gbifOccurrenceFacets.input.parse({
+      facet: 'DATASET_KEY',
+      facetLimit: 3,
+      facetOffset: 3,
+    });
+    await gbifOccurrenceFacets.handler(input, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.truncated).toBe(true);
+    // Advanced by the page actually returned, not blindly by facetLimit.
+    expect(enrichment.notice).toContain('facetOffset 6');
+    expect(enrichment.notice).toContain('estimate of continuation');
+  });
+
+  /**
+   * `ctx.enrich.truncated({ guidance })` and `ctx.enrich.notice()` write the same key on a
+   * last-wins basis, so a full page must not cost the caller the occurrenceStatus scope
+   * warning — the handler composes one notice and writes it once.
+   */
+  it('keeps the occurrenceStatus notice when the page is also truncated', async () => {
+    mockGetOccurrenceFacets.mockResolvedValue({
+      count: 3112676,
+      facets: [
+        {
+          field: 'DATASET_KEY',
+          counts: [
+            { name: 'ds-1', count: 9000 },
+            { name: 'ds-2', count: 8000 },
+          ],
+        },
+      ],
+    });
+
+    const ctx = createMockContext();
+    const input = gbifOccurrenceFacets.input.parse({ facet: 'DATASET_KEY', facetLimit: 2 });
+    await gbifOccurrenceFacets.handler(input, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.truncated).toBe(true);
+    expect(enrichment.notice).toContain('Absence records');
+    expect(enrichment.notice).toContain('full page of 2 facet values');
+  });
+
+  it('does not disclose truncation on an empty page, and keeps the empty-result notice', async () => {
+    mockGetOccurrenceFacets.mockResolvedValue({
+      count: 0,
+      facets: [{ field: 'DATASET_KEY', counts: [] }],
+    });
+
+    const ctx = createMockContext();
+    const input = gbifOccurrenceFacets.input.parse({ facet: 'DATASET_KEY', facetLimit: 3 });
+    await gbifOccurrenceFacets.handler(input, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    // 0 counts < facetLimit 3 — an empty page is proof of exhaustion, not truncation.
+    expect(enrichment.truncated).toBeUndefined();
+    expect(enrichment.notice).toContain('No facet values returned');
   });
 });
 

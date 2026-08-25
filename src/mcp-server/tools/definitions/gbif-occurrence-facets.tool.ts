@@ -168,10 +168,21 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
   enrichment: {
     facetLimit: z.number().describe('Maximum facet values requested.'),
     facetOffset: z.number().describe('Zero-based offset applied to the ranked facet values.'),
-    moreValuesLikely: z
+    truncated: z
       .boolean()
+      .optional()
       .describe(
-        'Heuristic continuation flag: true when this page returned a full facetLimit of values, so more distinct values may exist past facetOffset + facetLimit (re-call with facetOffset advanced by facetLimit). GBIF exposes no total distinct-value count, so this is an estimate, not exact.',
+        'Heuristic continuation flag: present and true when this page returned a full facetLimit of values, so more distinct values may exist past facetOffset + facetLimit. GBIF exposes no total distinct-value count, so this is an estimate, not exact. Absent when the page came back short, which is the only proof the ranking is exhausted.',
+      ),
+    shown: z
+      .number()
+      .optional()
+      .describe('Facet values returned in this page when the page was capped. Absent otherwise.'),
+    cap: z
+      .number()
+      .optional()
+      .describe(
+        'facetLimit applied when the page was capped. Re-call with facetOffset advanced by this value to page on. Absent otherwise.',
       ),
     occurrenceStatus: z
       .string()
@@ -182,7 +193,7 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
       .string()
       .optional()
       .describe(
-        'Guidance when no facet values were returned, a verbatim stateProvince filter matched nothing, or a presence/absence filter narrowed the aggregation. Absent only when none applies.',
+        'Guidance when no facet values were returned, the page came back full and more values may remain, a verbatim stateProvince filter matched nothing, or a presence/absence filter narrowed the aggregation. Absent only when none applies.',
       ),
   },
 
@@ -268,19 +279,39 @@ export const gbifOccurrenceFacets = tool('gbif_occurrence_facets', {
     ctx.enrich({
       facetLimit: input.facetLimit,
       facetOffset: input.facetOffset,
-      moreValuesLikely: counts.length >= input.facetLimit,
       occurrenceStatus: input.occurrenceStatus,
     });
+
+    /**
+     * A full page is the only continuation signal this endpoint offers: GBIF reports no
+     * total distinct-value count for a facet, so "more may exist" cannot be sharpened to
+     * "N remain". Composed into the notice rather than passed as `truncated({ guidance })`
+     * because `guidance` and `ctx.enrich.notice` write the same key on a last-wins basis —
+     * one write keeps the ordering of the two calls from deciding what the agent reads.
+     */
+    const pageIsFull = counts.length >= input.facetLimit;
     const notice = [
       counts.length === 0
         ? 'No facet values returned. The filter combination may match zero occurrences, or the facet dimension has no data for the given scope.'
+        : undefined,
+      pageIsFull
+        ? `Returned a full page of ${counts.length} facet values, so more may exist past this slice of the ranking — re-call with facetOffset ${input.facetOffset + counts.length} for the next page. GBIF publishes no total distinct-value count, so a full page is an estimate of continuation, not proof of it.`
         : undefined,
       stateProvinceNoMatchNotice(input.stateProvince, raw.count ?? 0),
       occurrenceStatusNotice(input.occurrenceStatus),
     ]
       .filter(Boolean)
       .join(' ');
-    if (notice) ctx.enrich.notice(notice);
+    if (pageIsFull) {
+      // `notice` always carries at least the continuation sentence on this branch.
+      ctx.enrich.truncated({
+        shown: counts.length,
+        cap: input.facetLimit,
+        guidance: notice,
+      });
+    } else if (notice) {
+      ctx.enrich.notice(notice);
+    }
 
     return {
       facet: input.facet,

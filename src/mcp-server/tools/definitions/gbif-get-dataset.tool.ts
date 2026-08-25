@@ -129,6 +129,37 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
       .describe('Geographic coverage descriptions declared by the dataset. May be absent.'),
   }),
 
+  /**
+   * Contact truncation, disclosed in the framework's canonical shape so a client reading
+   * only the enrichment trailer learns the list was cut. `contactsTotal`/`contactsReturned`
+   * on `output` carry the same fact for callers reading `structuredContent`; both are kept
+   * because they are the tool's established output contract and `format()` renders them.
+   */
+  enrichment: {
+    truncated: z
+      .boolean()
+      .optional()
+      .describe(
+        'True when the dataset carries more contacts than contactLimit allowed through. Absent when every contact was returned.',
+      ),
+    shown: z
+      .number()
+      .optional()
+      .describe('Contacts included in this response when the list was capped. Absent otherwise.'),
+    cap: z
+      .number()
+      .optional()
+      .describe(
+        'contactLimit applied when the list was capped. Raise it (max 100) to see more. Absent otherwise.',
+      ),
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        'How to reach the contacts contactLimit held back. Absent when every contact was returned.',
+      ),
+  },
+
   errors: [
     {
       reason: 'not_found',
@@ -174,6 +205,24 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
       });
     }
 
+    // contactLimit: 0 suppresses contact detail while projectContacts still reports
+    // contactsTotal/contactsReturned, so callers learn the dataset has contacts.
+    const contactFields = projectContacts(raw.contacts, input.contactLimit);
+
+    // Disclosed off the projected counts rather than contactLimit alone, so a dataset with
+    // fewer contacts than the cap is not reported as truncated.
+    if (
+      contactFields.contactsTotal !== undefined &&
+      contactFields.contactsReturned !== undefined &&
+      contactFields.contactsTotal > contactFields.contactsReturned
+    ) {
+      ctx.enrich.truncated({
+        shown: contactFields.contactsReturned,
+        cap: input.contactLimit,
+        guidance: `Showing ${contactFields.contactsReturned} of ${contactFields.contactsTotal} dataset contacts. Raise contactLimit (max 100) to see more, or set it to 0 to drop contact detail entirely while still reading contactsTotal.`,
+      });
+    }
+
     return {
       key: raw.key,
       title: raw.title,
@@ -185,9 +234,7 @@ export const gbifGetDataset = tool('gbif_get_dataset', {
       publishingCountry: raw.publishingCountry,
       recordCount: await resolveDatasetRecordCount(raw, ctx),
       numConstituents: raw.numConstituents,
-      // contactLimit: 0 suppresses contact detail while projectContacts still reports
-      // contactsTotal/contactsReturned, so callers learn the dataset has contacts.
-      ...projectContacts(raw.contacts, input.contactLimit),
+      ...contactFields,
       temporalCoverages: compactTemporalCoverages(raw.temporalCoverages),
       geographicCoverages: compactGeographicCoverages(raw.geographicCoverages),
     };
