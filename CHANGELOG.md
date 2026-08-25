@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.7.3](changelog/0.7.x/0.7.3.md) — 2026-08-25
+
+@cyanheads/mcp-ts-core ^0.11.1 → ^0.12.3 (tool inputs now strict; MCP SDK moves to @modelcontextprotocol/server); gbif_get_dataset and gbif_occurrence_facets adopt the framework's standard truncated/shown/cap trailer for their contact-list and facet-page caps.
+
 ## [0.7.2](changelog/0.7.x/0.7.2.md) — 2026-08-06
 
 kingdom, family, and genus on gbif_search_species now scope the search — each name is resolved to a GBIF backbone key and the narrowest is forwarded as higherTaxonKey, the parameter /species/search actually implements.
